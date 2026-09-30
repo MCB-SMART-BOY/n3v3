@@ -37,12 +37,13 @@ pub enum SpawnState {
     Cancelled,
 }
 
+use n3v3_common::{ProcessPlan, ProcessStage, ProcessStream};
 use n3v3_eval::value::{
     BuiltinFn, CommandValue, EventKind, EventValue, PipelineValue, ProcessResultValue,
     RedirectValue, StreamValue, TaskTargetValue, TaskValue, Value,
 };
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread;
@@ -1224,11 +1225,13 @@ pub(crate) fn output_to_process_result_value(output: std::process::Output) -> Pr
 }
 
 pub(crate) fn execute_command_lines(command: &CommandValue) -> Result<Value, String> {
-    let mut cmd = configured_process_command(command);
-    let output = cmd
-        .output()
-        .map_err(|e| format!("io.execCommandLines: {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let plan = process::lower_command_plan(command);
+    let Some(stage) = plan.stages().first() else {
+        return Err("io.execCommandLines: command plan has no stage".to_string());
+    };
+    let result =
+        execute_process_stage_to_process_result(stage, stage.stdin(), "io.execCommandLines")?;
+    let stdout = result.stdout();
     let lines: Vec<Value> = stdout
         .lines()
         .map(|line| Value::String(Rc::new(line.to_string())))
@@ -1686,65 +1689,43 @@ pub(crate) fn execute_pipeline_value_to_process_result_with_input(
     if pipeline.commands().is_empty() {
         return Err(format!("{fn_name}: requires a non-empty Pipeline"));
     }
-
+    let plan = process::lower_pipeline_plan(pipeline, fn_name)?;
     let mut previous_stdout = initial_stdin.map(str::to_owned);
     let mut combined_stderr = String::new();
-    let mut last_result: Option<ProcessResultValue> = None;
-    let last_stage_index = pipeline.commands().len() - 1;
+    let mut last_result = None;
 
-    for (idx, command) in pipeline.commands().iter().enumerate() {
-        if idx > 0 && command.stdin().is_some() {
-            return Err(format!(
-                "{fn_name}: pipeline stage {} cannot specify stdin",
-                idx + 1
-            ));
-        }
-        if idx > 0
-            && command.redirects().iter().any(|redirect| {
-                matches!(redirect.stream(), n3v3_eval::value::RedirectStream::Stdin)
-            })
-        {
-            return Err(format!(
-                "{fn_name}: pipeline stage {} cannot carry stdin redirect",
-                idx + 1
-            ));
-        }
-
+    for (idx, stage) in plan.stages().iter().enumerate() {
         if idx == 0
             && previous_stdout.is_some()
-            && (command.stdin().is_some()
-                || command.redirects().iter().any(|redirect| {
-                    matches!(redirect.stream(), n3v3_eval::value::RedirectStream::Stdin)
-                }))
+            && (stage.stdin().is_some()
+                || stage
+                    .redirects()
+                    .iter()
+                    .any(|redirect| redirect.stream() == ProcessStream::Stdin))
         {
             return Err(format!(
                 "{fn_name}: pipeline stage 1 cannot combine boundary stdin with stage-local stdin"
             ));
         }
-        if idx < last_stage_index
-            && command.redirects().iter().any(|redirect| {
-                matches!(redirect.stream(), n3v3_eval::value::RedirectStream::Stdout)
-            })
-        {
-            return Err(format!(
-                "{fn_name}: pipeline stage {} cannot carry stdout redirect before final stage",
-                idx + 1
-            ));
-        }
-
         let stage_stdin = if idx == 0 {
-            previous_stdout.as_deref().or(command.stdin())
+            previous_stdout.as_deref().or(stage.stdin())
         } else {
             previous_stdout.as_deref()
         };
-        let result =
-            execute_command_value_to_process_result_with_input(command, stage_stdin, fn_name)?;
+        let result = execute_process_stage_to_process_result(stage, stage_stdin, fn_name)?;
         previous_stdout = Some(result.stdout().to_string());
+        if combined_stderr.len().saturating_add(result.stderr().len()) > MAX_OUTPUT_BYTES {
+            return Err(format!(
+                "{fn_name}: stderr exceeds maximum size of {MAX_OUTPUT_BYTES} bytes"
+            ));
+        }
         combined_stderr.push_str(result.stderr());
         last_result = Some(result);
     }
 
-    let last_result = last_result.expect("non-empty pipeline should produce a result");
+    let Some(last_result) = last_result else {
+        return Err(format!("{fn_name}: requires a non-empty Pipeline"));
+    };
     Ok(ProcessResultValue::new(
         last_result.code(),
         last_result.is_success(),
@@ -1755,34 +1736,34 @@ pub(crate) fn execute_pipeline_value_to_process_result_with_input(
 
 pub(crate) fn execute_pipeline_value_with_redirects_to_process_result(
     pipeline: &PipelineValue,
-    redirects: &[RedirectValue],
+    _redirects: &[RedirectValue],
     fn_name: &str,
 ) -> Result<ProcessResultValue, String> {
     if pipeline.commands().is_empty() {
         return Err(format!("{fn_name}: requires a non-empty Pipeline"));
     }
-    if redirects.is_empty() {
+    if pipeline.redirects().is_empty() {
         return Err(format!("{fn_name}: requires a non-empty List<Redirect>"));
     }
-
+    let plan = process::lower_pipeline_plan(pipeline, fn_name)?;
     let mut stdout_path = None;
     let mut stderr_path = None;
     let mut stdin_path = None;
 
-    for redirect in redirects {
-        let resolved = resolve_pipeline_redirect_path(pipeline, redirect);
+    for redirect in plan.boundary_redirects() {
+        let resolved = resolve_plan_redirect_path(&plan, redirect);
         match redirect.stream() {
-            n3v3_eval::value::RedirectStream::Stdout => {
+            ProcessStream::Stdout => {
                 if stdout_path.replace(resolved).is_some() {
                     return Err(format!("{fn_name}: duplicate stdout redirect"));
                 }
             }
-            n3v3_eval::value::RedirectStream::Stderr => {
+            ProcessStream::Stderr => {
                 if stderr_path.replace(resolved).is_some() {
                     return Err(format!("{fn_name}: duplicate stderr redirect"));
                 }
             }
-            n3v3_eval::value::RedirectStream::Stdin => {
+            ProcessStream::Stdin => {
                 if stdin_path.replace(resolved).is_some() {
                     return Err(format!("{fn_name}: duplicate stdin redirect"));
                 }
@@ -1790,15 +1771,15 @@ pub(crate) fn execute_pipeline_value_with_redirects_to_process_result(
         }
     }
 
-    let final_stage = pipeline
-        .commands()
+    let final_stage = plan
+        .stages()
         .last()
-        .expect("non-empty pipeline should have a final stage");
+        .ok_or_else(|| format!("{fn_name}: requires a non-empty Pipeline"))?;
     if stdout_path.is_some()
         && final_stage
             .redirects()
             .iter()
-            .any(|redirect| matches!(redirect.stream(), n3v3_eval::value::RedirectStream::Stdout))
+            .any(|redirect| redirect.stream() == ProcessStream::Stdout)
     {
         return Err(format!(
             "{fn_name}: final pipeline stage cannot combine boundary stdout with stage-local stdout redirect"
@@ -1808,7 +1789,7 @@ pub(crate) fn execute_pipeline_value_with_redirects_to_process_result(
         && final_stage
             .redirects()
             .iter()
-            .any(|redirect| matches!(redirect.stream(), n3v3_eval::value::RedirectStream::Stderr))
+            .any(|redirect| redirect.stream() == ProcessStream::Stderr)
     {
         return Err(format!(
             "{fn_name}: final pipeline stage cannot combine boundary stderr with stage-local stderr redirect"
@@ -1816,23 +1797,20 @@ pub(crate) fn execute_pipeline_value_with_redirects_to_process_result(
     }
 
     let stdin_text = match stdin_path {
-        Some(path) => Some(std::fs::read_to_string(path).map_err(|e| format!("{fn_name}: {e}"))?),
+        Some(path) => Some(read_stdin_redirect(&path, fn_name)?),
         None => None,
     };
-
     let result = execute_pipeline_value_to_process_result_with_input(
         pipeline,
         stdin_text.as_deref(),
         fn_name,
     )?;
-
     let stdout = if let Some(path) = stdout_path {
         std::fs::write(path, result.stdout().as_bytes()).map_err(|e| format!("{fn_name}: {e}"))?;
         String::new()
     } else {
         result.stdout().to_string()
     };
-
     let stderr = if let Some(path) = stderr_path {
         std::fs::write(path, result.stderr().as_bytes()).map_err(|e| format!("{fn_name}: {e}"))?;
         String::new()
@@ -2066,17 +2044,31 @@ pub(crate) fn execute_command_value_to_process_result_with_input(
     stdin_text: Option<&str>,
     fn_name: &str,
 ) -> Result<ProcessResultValue, String> {
-    if command.has_embedded_redirects() {
-        return execute_command_value_with_redirects_to_process_result_with_input(
-            command,
-            command.redirects(),
-            stdin_text,
-            fn_name,
-        );
+    let plan = process::lower_command_plan(command);
+    let stage = plan
+        .stages()
+        .first()
+        .ok_or_else(|| format!("{fn_name}: command plan has no stage"))?;
+    execute_process_stage_to_process_result(stage, stdin_text, fn_name)
+}
+
+fn execute_process_stage_to_process_result(
+    stage: &ProcessStage,
+    stdin_text: Option<&str>,
+    fn_name: &str,
+) -> Result<ProcessResultValue, String> {
+    if stage.redirects().is_empty() {
+        return execute_process_stage_without_redirects(stage, stdin_text, fn_name);
     }
+    execute_process_stage_with_redirects(stage, stdin_text, fn_name)
+}
 
-    let mut cmd = configured_process_command(command);
-
+fn execute_process_stage_without_redirects(
+    stage: &ProcessStage,
+    stdin_text: Option<&str>,
+    fn_name: &str,
+) -> Result<ProcessResultValue, String> {
+    let mut cmd = configured_process_stage(stage);
     if let Some(stdin_text) = stdin_text {
         if stdin_text.len() > MAX_STDIN_BYTES {
             return Err(format!(
@@ -2086,220 +2078,353 @@ pub(crate) fn execute_command_value_to_process_result_with_input(
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
-
         let mut child = cmd.spawn().map_err(|e| format!("{fn_name}: {e}"))?;
         if let Some(mut pipe) = child.stdin.take() {
             pipe.write_all(stdin_text.as_bytes())
                 .map_err(|e| format!("{fn_name}: failed writing stdin: {e}"))?;
         }
-
         let output = child
             .wait_with_output()
             .map_err(|e| format!("{fn_name}: {e}"))?;
-        if output.stdout.len() > MAX_OUTPUT_BYTES {
-            return Err(format!(
-                "{fn_name}: stdout exceeds maximum size of {MAX_OUTPUT_BYTES} bytes"
-            ));
-        }
-        if output.stderr.len() > MAX_OUTPUT_BYTES {
-            return Err(format!(
-                "{fn_name}: stderr exceeds maximum size of {MAX_OUTPUT_BYTES} bytes"
-            ));
-        }
-        Ok(output_to_process_result_value(output))
-    } else {
-        let output = cmd.output().map_err(|e| format!("{fn_name}: {e}"))?;
-        if output.stdout.len() > MAX_OUTPUT_BYTES {
-            return Err(format!(
-                "{fn_name}: stdout exceeds maximum size of {MAX_OUTPUT_BYTES} bytes"
-            ));
-        }
-        if output.stderr.len() > MAX_OUTPUT_BYTES {
-            return Err(format!(
-                "{fn_name}: stderr exceeds maximum size of {MAX_OUTPUT_BYTES} bytes"
-            ));
-        }
-        Ok(output_to_process_result_value(output))
+        validate_process_output(&output, fn_name)?;
+        return Ok(output_to_process_result_value(output));
     }
+
+    let output = cmd.output().map_err(|e| format!("{fn_name}: {e}"))?;
+    validate_process_output(&output, fn_name)?;
+    Ok(output_to_process_result_value(output))
 }
 
-pub(crate) fn execute_command_value_with_redirects_to_process_result_with_input(
-    command: &CommandValue,
-    redirects: &[RedirectValue],
+struct StageRedirectPaths {
+    stdout: Option<std::path::PathBuf>,
+    stderr: Option<std::path::PathBuf>,
+    stdin: Option<std::path::PathBuf>,
+}
+
+fn execute_process_stage_with_redirects(
+    stage: &ProcessStage,
     stdin_text: Option<&str>,
     fn_name: &str,
 ) -> Result<ProcessResultValue, String> {
-    if redirects.is_empty() {
-        return Err(format!("{fn_name}: requires a non-empty List<Redirect>"));
-    }
+    let StageRedirectPaths {
+        stdout: stdout_path,
+        stderr: stderr_path,
+        stdin: stdin_path,
+    } = resolve_stage_redirects(stage, fn_name)?;
+    let stdin_text = resolve_stage_stdin(stage, stdin_path, stdin_text, fn_name)?;
+    let stdout_file = stdout_path
+        .as_deref()
+        .map(|path| std::fs::File::create(path).map_err(|e| format!("{fn_name}: {e}")))
+        .transpose()?;
+    let stderr_file = stderr_path
+        .as_deref()
+        .map(|path| std::fs::File::create(path).map_err(|e| format!("{fn_name}: {e}")))
+        .transpose()?;
+    execute_spawned_process_with_redirects(
+        stage,
+        stdin_text.as_deref(),
+        stdout_file,
+        stderr_file,
+        fn_name,
+    )
+}
 
+fn resolve_stage_redirects(
+    stage: &ProcessStage,
+    fn_name: &str,
+) -> Result<StageRedirectPaths, String> {
     let mut stdout_path = None;
     let mut stderr_path = None;
     let mut stdin_path = None;
-
-    for redirect in redirects {
-        let resolved = resolve_redirect_path(command, redirect);
+    for redirect in stage.redirects() {
+        let resolved = resolve_stage_redirect_path(stage, redirect);
         match redirect.stream() {
-            n3v3_eval::value::RedirectStream::Stdout => {
+            ProcessStream::Stdout => {
                 if stdout_path.replace(resolved).is_some() {
                     return Err(format!("{fn_name}: duplicate stdout redirect"));
                 }
             }
-            n3v3_eval::value::RedirectStream::Stderr => {
+            ProcessStream::Stderr => {
                 if stderr_path.replace(resolved).is_some() {
                     return Err(format!("{fn_name}: duplicate stderr redirect"));
                 }
             }
-            n3v3_eval::value::RedirectStream::Stdin => {
+            ProcessStream::Stdin => {
                 if stdin_path.replace(resolved).is_some() {
                     return Err(format!("{fn_name}: duplicate stdin redirect"));
                 }
             }
         }
     }
+    Ok(StageRedirectPaths {
+        stdout: stdout_path,
+        stderr: stderr_path,
+        stdin: stdin_path,
+    })
+}
 
-    if command.stdin().is_some() && stdin_path.is_some() {
+fn resolve_stage_stdin(
+    stage: &ProcessStage,
+    stdin_path: Option<std::path::PathBuf>,
+    stdin_text: Option<&str>,
+    fn_name: &str,
+) -> Result<Option<String>, String> {
+    if (stage.stdin().is_some() || stdin_text.is_some()) && stdin_path.is_some() {
         return Err(format!(
             "{fn_name}: command cannot combine redirect stdin with configured stdin"
         ));
     }
-
-    if stdin_text.is_some() && stdin_path.is_some() {
-        return Err(format!(
-            "{fn_name}: command cannot combine redirect stdin with configured stdin"
-        ));
+    match stdin_path {
+        Some(path) => Ok(Some(read_stdin_redirect(&path, fn_name)?)),
+        None => {
+            let configured = stdin_text
+                .map(str::to_owned)
+                .or_else(|| stage.stdin().map(str::to_owned));
+            if configured
+                .as_ref()
+                .is_some_and(|text| text.len() > MAX_STDIN_BYTES)
+            {
+                return Err(format!(
+                    "{fn_name}: stdin exceeds maximum size of {MAX_STDIN_BYTES} bytes"
+                ));
+            }
+            Ok(configured)
+        }
     }
+}
 
-    let stdin_text = match stdin_path {
-        Some(path) => Some(std::fs::read_to_string(path).map_err(|e| format!("{fn_name}: {e}"))?),
-        None => stdin_text
-            .map(str::to_owned)
-            .or_else(|| command.stdin().map(str::to_owned)),
-    };
+fn execute_spawned_process_with_redirects(
+    stage: &ProcessStage,
+    stdin_text: Option<&str>,
+    stdout_file: Option<std::fs::File>,
+    stderr_file: Option<std::fs::File>,
+    fn_name: &str,
+) -> Result<ProcessResultValue, String> {
+    let mut cmd = configured_process_stage(stage);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    if stdin_text.is_some() {
+        cmd.stdin(std::process::Stdio::piped());
+    } else {
+        cmd.stdin(std::process::Stdio::null());
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("{fn_name}: {e}"))?;
+    let stdout_writer =
+        match spawn_redirect_writer(&mut child, stdout_file, ProcessStream::Stdout, fn_name) {
+            Ok(writer) => writer,
+            Err(error) => {
+                kill_and_reap(&mut child);
+                return Err(error);
+            }
+        };
+    let stderr_writer =
+        match spawn_redirect_writer(&mut child, stderr_file, ProcessStream::Stderr, fn_name) {
+            Ok(writer) => writer,
+            Err(error) => {
+                kill_and_reap(&mut child);
+                let _ = join_redirect_writer(stdout_writer, fn_name);
+                return Err(error);
+            }
+        };
+    if let Some(stdin_text) = stdin_text {
+        let write_result = child.stdin.take().map_or(Ok(()), |mut pipe| {
+            pipe.write_all(stdin_text.as_bytes())
+                .map_err(|e| format!("{fn_name}: failed writing stdin: {e}"))
+        });
+        if let Err(error) = write_result {
+            kill_and_reap(&mut child);
+            let _ = join_redirect_writer(stdout_writer, fn_name);
+            let _ = join_redirect_writer(stderr_writer, fn_name);
+            return Err(error);
+        }
+    }
+    let output_result = child
+        .wait_with_output()
+        .map_err(|e| format!("{fn_name}: {e}"));
+    let stdout_result = join_redirect_writer(stdout_writer, fn_name);
+    let stderr_result = join_redirect_writer(stderr_writer, fn_name);
+    let output = output_result?;
+    stdout_result?;
+    stderr_result?;
+    validate_process_output(&output, fn_name)?;
+    Ok(output_to_process_result_value(output))
+}
 
-    if let Some(ref text) = stdin_text
-        && text.len() > MAX_STDIN_BYTES
-    {
+fn read_stdin_redirect(path: &std::path::Path, fn_name: &str) -> Result<String, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("{fn_name}: {e}"))?;
+    let mut content = String::new();
+    file.take((MAX_STDIN_BYTES as u64).saturating_add(1))
+        .read_to_string(&mut content)
+        .map_err(|e| format!("{fn_name}: {e}"))?;
+    if content.len() > MAX_STDIN_BYTES {
         return Err(format!(
             "{fn_name}: stdin exceeds maximum size of {MAX_STDIN_BYTES} bytes"
         ));
     }
+    Ok(content)
+}
 
-    let mut cmd = configured_process_command(command);
-
-    if let Some(path) = stdout_path {
-        let file = std::fs::File::create(path).map_err(|e| format!("{fn_name}: {e}"))?;
-        cmd.stdout(std::process::Stdio::from(file));
-    } else {
-        cmd.stdout(std::process::Stdio::piped());
-    }
-
-    if let Some(path) = stderr_path {
-        let file = std::fs::File::create(path).map_err(|e| format!("{fn_name}: {e}"))?;
-        cmd.stderr(std::process::Stdio::from(file));
-    } else {
-        cmd.stderr(std::process::Stdio::piped());
-    }
-
-    if let Some(stdin_text) = stdin_text.as_deref() {
-        cmd.stdin(std::process::Stdio::piped());
-
-        let mut child = cmd.spawn().map_err(|e| format!("{fn_name}: {e}"))?;
-        if let Some(mut pipe) = child.stdin.take() {
-            pipe.write_all(stdin_text.as_bytes())
-                .map_err(|e| format!("{fn_name}: failed writing stdin: {e}"))?;
+fn spawn_redirect_writer(
+    child: &mut std::process::Child,
+    file: Option<std::fs::File>,
+    stream: ProcessStream,
+    fn_name: &str,
+) -> Result<Option<thread::JoinHandle<Result<(), String>>>, String> {
+    let Some(file) = file else {
+        return Ok(None);
+    };
+    let (pipe, stream_name) = match stream {
+        ProcessStream::Stdout => (
+            child
+                .stdout
+                .take()
+                .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+            "stdout",
+        ),
+        ProcessStream::Stderr => (
+            child
+                .stderr
+                .take()
+                .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+            "stderr",
+        ),
+        ProcessStream::Stdin => {
+            return Err(format!("{fn_name}: invalid stdin output redirect"));
         }
+    };
+    let pipe = pipe.ok_or_else(|| format!("{fn_name}: {stream_name} redirect pipe unavailable"))?;
+    let pid = child.id();
+    Ok(Some(thread::spawn(move || {
+        write_redirected_output(pipe, file, pid, stream_name)
+    })))
+}
 
-        let output = child
-            .wait_with_output()
-            .map_err(|e| format!("{fn_name}: {e}"))?;
-        if output.stdout.len() > MAX_OUTPUT_BYTES {
+fn write_redirected_output(
+    mut pipe: impl Read,
+    mut file: std::fs::File,
+    pid: u32,
+    stream_name: &str,
+) -> Result<(), String> {
+    const REDIRECT_COPY_BUFFER_BYTES: usize = 8192;
+    let mut buffer = [0_u8; REDIRECT_COPY_BUFFER_BYTES];
+    let mut written: usize = 0;
+    loop {
+        let read = match pipe.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error) => {
+                n3v3_common::kill_process(pid);
+                return Err(format!("{stream_name} redirect read failed: {error}"));
+            }
+        };
+        if read == 0 {
+            return Ok(());
+        }
+        let Some(next) = written.checked_add(read) else {
+            n3v3_common::kill_process(pid);
             return Err(format!(
-                "{fn_name}: stdout exceeds maximum size of {MAX_OUTPUT_BYTES} bytes"
+                "{stream_name} exceeds maximum size of {MAX_OUTPUT_BYTES} bytes"
+            ));
+        };
+        if next > MAX_OUTPUT_BYTES {
+            let allowed = MAX_OUTPUT_BYTES - written;
+            if allowed > 0 {
+                file.write_all(&buffer[..allowed]).map_err(|error| {
+                    n3v3_common::kill_process(pid);
+                    format!("{stream_name} redirect write failed: {error}")
+                })?;
+            }
+            n3v3_common::kill_process(pid);
+            return Err(format!(
+                "{stream_name} exceeds maximum size of {MAX_OUTPUT_BYTES} bytes"
             ));
         }
-        if output.stderr.len() > MAX_OUTPUT_BYTES {
-            return Err(format!(
-                "{fn_name}: stderr exceeds maximum size of {MAX_OUTPUT_BYTES} bytes"
-            ));
+        if let Err(error) = file.write_all(&buffer[..read]) {
+            n3v3_common::kill_process(pid);
+            return Err(format!("{stream_name} redirect write failed: {error}"));
         }
-        Ok(output_to_process_result_value(output))
-    } else {
-        cmd.stdin(std::process::Stdio::null());
-        let output = cmd
-            .spawn()
-            .map_err(|e| format!("{fn_name}: {e}"))?
-            .wait_with_output()
-            .map_err(|e| format!("{fn_name}: {e}"))?;
-        if output.stdout.len() > MAX_OUTPUT_BYTES {
-            return Err(format!(
-                "{fn_name}: stdout exceeds maximum size of {MAX_OUTPUT_BYTES} bytes"
-            ));
-        }
-        if output.stderr.len() > MAX_OUTPUT_BYTES {
-            return Err(format!(
-                "{fn_name}: stderr exceeds maximum size of {MAX_OUTPUT_BYTES} bytes"
-            ));
-        }
-        Ok(output_to_process_result_value(output))
+        written = next;
     }
 }
 
-pub(crate) fn configured_process_command(command: &CommandValue) -> std::process::Command {
-    let mut cmd = std::process::Command::new(command.program());
-    cmd.args(command.args());
+fn join_redirect_writer(
+    writer: Option<thread::JoinHandle<Result<(), String>>>,
+    fn_name: &str,
+) -> Result<(), String> {
+    let Some(writer) = writer else {
+        return Ok(());
+    };
+    writer
+        .join()
+        .map_err(|_| format!("{fn_name}: redirect writer panicked"))?
+        .map_err(|error| format!("{fn_name}: {error}"))
+}
 
-    if let Some(cwd) = command.cwd() {
+fn kill_and_reap(child: &mut std::process::Child) {
+    n3v3_common::kill_process(child.id());
+    let _ = child.wait();
+}
+
+fn validate_process_output(output: &std::process::Output, fn_name: &str) -> Result<(), String> {
+    if output.stdout.len() > MAX_OUTPUT_BYTES {
+        return Err(format!(
+            "{fn_name}: stdout exceeds maximum size of {MAX_OUTPUT_BYTES} bytes"
+        ));
+    }
+    if output.stderr.len() > MAX_OUTPUT_BYTES {
+        return Err(format!(
+            "{fn_name}: stderr exceeds maximum size of {MAX_OUTPUT_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
+fn configured_process_stage(stage: &ProcessStage) -> std::process::Command {
+    let mut cmd = std::process::Command::new(stage.program());
+    cmd.args(stage.args());
+    if let Some(cwd) = stage.cwd() {
         cmd.current_dir(cwd);
     }
-    for (k, v) in command.env() {
-        cmd.env(k, v);
+    for (key, value) in stage.env() {
+        cmd.env(key, value);
     }
-    // Strip dangerous environment variables that could cause arbitrary code execution
     cmd.env_remove("LD_PRELOAD");
     cmd.env_remove("LD_LIBRARY_PATH");
     cmd.env_remove("DYLD_INSERT_LIBRARIES");
     cmd.env_remove("DYLD_LIBRARY_PATH");
-
     cmd
 }
 
-pub(crate) fn resolve_redirect_path(
-    command: &CommandValue,
-    redirect: &RedirectValue,
+fn resolve_stage_redirect_path(
+    stage: &ProcessStage,
+    redirect: &n3v3_common::ProcessRedirect,
 ) -> std::path::PathBuf {
     let path = redirect.path();
     if path
         .components()
-        .any(|c| c == std::path::Component::ParentDir)
+        .any(|component| component == std::path::Component::ParentDir)
     {
         return std::path::PathBuf::from("/dev/null/n3v3-blocked-traversal");
     }
     if path.is_relative()
-        && let Some(cwd) = command.cwd()
+        && let Some(cwd) = stage.cwd()
     {
         return std::path::PathBuf::from(cwd).join(path);
     }
-    path.clone()
+    path.to_path_buf()
 }
 
-fn resolve_pipeline_redirect_path(
-    pipeline: &PipelineValue,
-    redirect: &RedirectValue,
+fn resolve_plan_redirect_path(
+    plan: &ProcessPlan,
+    redirect: &n3v3_common::ProcessRedirect,
 ) -> std::path::PathBuf {
-    let command = match redirect.stream() {
-        n3v3_eval::value::RedirectStream::Stdin => pipeline
-            .commands()
-            .first()
-            .expect("non-empty pipeline should have an initial stage"),
-        n3v3_eval::value::RedirectStream::Stdout | n3v3_eval::value::RedirectStream::Stderr => {
-            pipeline
-                .commands()
-                .last()
-                .expect("non-empty pipeline should have a final stage")
-        }
+    let stage = match redirect.stream() {
+        ProcessStream::Stdin => plan.stages().first(),
+        ProcessStream::Stdout | ProcessStream::Stderr => plan.stages().last(),
     };
-    resolve_redirect_path(command, redirect)
+    stage.map_or_else(
+        || std::path::PathBuf::from("/dev/null/n3v3-blocked-traversal"),
+        |stage| resolve_stage_redirect_path(stage, redirect),
+    )
 }
 
 pub(crate) fn record_string_required(

@@ -46,6 +46,17 @@ For multi-module analysis, the frontend first finalizes one shared
 resolver and a fresh `TypeChecker`. Module-local definition and diagnostic
 state is never reused across dependency and current-module checks.
 
+`ModuleSemantics.action_plans` is an inspection-only side table. The frontend
+clears plans for every analyzed module when any module has a blocking error;
+evaluation must use the separately filtered, diagnostic-clean HIR path.
+
+`n3v3-common::ProcessPlan` is the current internal process-description
+boundary. `n3v3-std` lowers existing `CommandValue`/`PipelineValue` values into
+owned stages before blocking command, pipeline, `execCommandLines`, and
+ordinary Task-await execution; it does not change `Value`, `Task`, integer spawn
+IDs, or evaluator streaming behavior. `ProcessPlan` is not a frontend action
+executed by `check`, LSP, formatter, or pure analysis.
+
 The `n3v3 check` purity gate walks canonical HIR with the frontend's method
 resolution table. Resolved trait methods are checked by their method identity;
 unresolved targets retain builtin fallback checking, and index operands,
@@ -87,8 +98,8 @@ release: bump version to 3.20.0        # Release
 ## Feature Addition Checklist
 
 Every new effectful builtin:
-1. `n3v3-std`: Register in `is_effectful_builtin()`
-2. `n3v3-typeck`: Add type signature
+1. `n3v3-common`: Register effect metadata in `intrinsic_metadata()`
+2. `n3v3-std`: Register the runtime binding and delegate classification to the shared registry
 3. `n3v3-frontend`: Wire into pipeline
 4. `n3v3-eval`: Implement HIR evaluation
 5. REPL: `:type` support

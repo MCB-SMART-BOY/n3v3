@@ -139,9 +139,8 @@ lake exe lean4 --server
 | `formal/lakefile.lean` | Lake build configuration |
 | `formal/n3v3/Spec/Syntax.lean` | Abstract syntax — Ty, Expr, Value, Pattern, BinOp |
 | `formal/n3v3/Spec/Typing.lean` | Typing judgment: Γ ⊢ e : τ |
-| `formal/n3v3/Spec/Eval.lean` | Big-step evaluation: env ⊢ e ⇓ v |
-| `formal/n3v3/Spec/Values.lean` | Values + EnvMatches(P) |
-| `formal/n3v3/Spec/BigStep.lean` | Big-step v2 with matchOn_fallthrough |
+| `formal/n3v3/Spec/Eval.lean` | Big-step evaluation v2 (`inductive BigStep`, env ⊢ e ⇓ v) + matchOn_fallthrough |
+| `formal/n3v3/Proofs/Values.lean` | Values + ValueTyping + EnvMatches(P) |
 | `formal/n3v3/Spec/Effects.lean` | EffectEval v4.3 (34 rules) |
 | `formal/n3v3/Proofs/Safety.lean` | type_safety theorem (13/17) + BinOp (12/12) |
 | `formal/n3v3/Proofs/SafetyLemmas.lean` | Pattern matching lemmas (5 verified) |

@@ -17,16 +17,19 @@ formal/
 │   │   ├── Values.lean v4      — ValueTyping + EnvMatches（谓词参数化）
 │   │   ├── Context.lean v4     — env_matches_lookup 引理
 │   │   ├── Safety.lean v18     — 类型安全（13 个已验证 case）
-│   │   └── SafetyLemmas.lean   — 已验证的模式匹配引理（5 个）
+│   │   ├── SafetyLemmas.lean   — 已验证的模式匹配引理（5 个）
+│   │   └── EffectProperties.lean — 效果规则属性（cancel/pure/streamCollect）
 │   ├── Verify/
 │   │   ├── Path.lean           — 路径遍历安全（M-1）
 │   │   ├── Environ.lean        — 环境变量过滤（M-4）
-│   │   └── Limits.lean         — 缓冲区大小限制（H-1, H-2）
+│   │   ├── Limits.lean         — 缓冲区大小限制（H-1, H-2）
+│   │   └── Stream.lean         — 流式语义安全
 │   ├── Refinement/
 │   │   ├── Types.lean          — Rust-Lean 精化关系
 │   │   ├── Path.lean           — 路径解析精化（M-1）
 │   │   ├── Environ.lean        — 环境过滤精化（M-4）
-│   │   └── Limits.lean         — 大小限制精化（H-1, H-2）
+│   │   ├── Limits.lean         — 大小限制精化（H-1, H-2）
+│   │   └── Stream.lean         — 流式精化
 │   └── Tests/
 │       └── Eval.lean           — 可执行规范求值器（11 个自测试）
 ├── lakefile.lean               — Lean 项目配置
@@ -40,7 +43,7 @@ formal/
 # 安装 Lean 4
 curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh
 
-# 构建（19 个模块，lake build 全部通过）
+# 构建（21 个 Lean 模块；lake build 报告 22 个构建目标，全部通过）
 cd formal
 lake build
 ```
@@ -50,11 +53,12 @@ lake build
 | 层次 | 模块数 | 状态 | 说明 |
 |------|--------|------|------|
 | Spec（规范） | 4 | ✅ | Syntax, Typing v4, Eval v2, Effects v4.3 (34 rules, +5 stream Phase C) |
-| Proofs（证明） | 5 (+EffectProperties) | ✅ | Values, Context, Safety v18, SafetyLemmas |
-| Verify（安全） | 3 | ✅ | Path (M-1), Environ (M-4), Limits (H-1/H-2) |
-| Refinement（精化） | 5 (+Stream) | ✅ | Types, Path, Environ, Limits |
+| Proofs（证明） | 5 | ✅ | Values, Context, Safety v18, SafetyLemmas, EffectProperties |
+| Verify（安全） | 4 | ✅ | Path (M-1), Environ (M-4), Limits (H-1/H-2), Stream |
+| Refinement（精化） | 5 | ✅ | Types, Path, Environ, Limits, Stream |
 | Tests（测试） | 1 | ✅ | 可执行规范求值器 |
-| **合计** | **22** | ✅ | `lake build` 全部通过 |
+| 顶层（顶层模块） | 2 | ✅ | n3v3.lean, lakefile.lean |
+| **合计** | **21** | ✅ | 21 个 `.lean` 文件（= `scripts/counts.sh` 的 `lean_modules`）；`lake build` 报告 22 个构建目标并全部通过 |
 
 ## 形式化范围
 

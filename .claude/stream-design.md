@@ -124,18 +124,22 @@ Value (运行时值)
 
 ## 3. API 详解 / API Specification
 
-### 3.1 构造流（无副作用）
+### 3.1 构造流（按当前 runtime 边界）
 
-这些 API 创建惰性流对象，不触发任何 I/O：
+这些 API 返回惰性流对象；但当前 runtime 的部分构造器会在构造阶段执行
+宿主操作，因此不能统一视为纯构造。类型检查器与用户文档的规范参数是
+`String`；runtime 额外接受 `Path` 作为兼容扩展。
 
-| Builtin | 签名 | 返回 | 说明 |
+| Builtin | 签名 | 返回 | 当前效果 |
 |---------|------|------|------|
-| `io.streamLines` | `Path -> Stream<String>` | `Stream<String>` | 惰性文件行流 |
-| `io.streamCommand` | `Command -> Stream<String>` | `Stream<String>` | 惰性命令 stdout 流 |
-| `io.streamList` | `List<T> -> Stream<T>` | `Stream<T>` | 列表转惰性流 |
-| `io.streamBytes` | `Path -> Stream<Bytes>` | `Stream<Bytes>` | 惰性字节块流 (8KB/chunk) |
+| `io.streamLines` | `String -> Stream<String>` | `Stream<String>` | 构造时打开文件并启动生产者 |
+| `io.streamCommand` | `Command -> Stream<String>` | `Stream<String>` | 构造时启动进程并启动生产者 |
+| `io.streamList` | `List<T> -> Stream<T>` | `Stream<T>` | 纯数据转换 |
+| `io.streamBytes` | `String -> Stream<Bytes>` | `Stream<Bytes>` | 构造时打开文件并启动生产者 |
 
-> **设计决策**：`io.streamCommand` 创建流对象时**不启动进程**。进程在实际消费（如 `streamCollect`、`streamPipe`）时才启动。这与 `Task<T>` 的 spawn 语义不同——`Stream<T>` 是 pull-based，`Task<T>` 是 push-based。
+> **设计目标与当前实现的差异**：理想的 cold Stream 应在消费时才打开文件或
+> 启动进程；当前实现尚未达到该契约。恢复 cold 语义前，必须同步更新
+> `intrinsic_metadata`、typeck、HIR evaluator、Lean 规则和行为测试。
 
 ### 3.2 变换流（无副作用，惰性）
 
@@ -164,9 +168,10 @@ Value (运行时值)
 
 ### 3.4 超时控制
 
+`io.streamWithTimeout` 当前在构造阶段读取计时器并启动生产者，因此归入
+`Time` 效果；它仍返回 `Stream<Option<T>>`，消费阶段继续可能触发源流效果。
+
 ```n3v3
--- io.streamWithTimeout: 每个元素等待不超过 ms 毫秒
--- 超时返回 None，正常返回 Some(value)
 io.streamWithTimeout(s: Stream<String>, ms: Int): Stream<Option<String>>
 ```
 
@@ -280,12 +285,10 @@ const MAX_STREAM_LINES: usize = 100_000;              // 100k lines
 
 ### 6.1 分类
 
-| API | 分类 | 原因 |
-|-----|------|------|
-| `io.streamLines` | **无副作用**（构造） | 只创建惰性对象，不读文件 |
-| `io.streamCommand` | **无副作用**（构造） | 只创建惰性对象，不启动进程 |
-| `io.streamList` | **无副作用**（构造） | 纯数据变换 |
-| `io.streamBytes` | **无副作用**（构造） | 只创建惰性对象 |
+| `io.streamLines` | **有宿主效果**（构造） | 当前打开文件并启动生产者线程 |
+| `io.streamCommand` | **有宿主效果**（构造） | 当前启动进程并启动生产者线程 |
+| `io.streamList` | **无副作用**（构造） | 纯数据转换 |
+| `io.streamBytes` | **有宿主效果**（构造） | 当前打开文件并启动生产者线程 |
 | `io.streamMap` | **无副作用**（变换） | 纯函数包装 |
 | `io.streamFilter` | **无副作用**（变换） | 纯函数包装 |
 | `io.streamTake` | **无副作用**（变换） | 纯计数 |
@@ -295,44 +298,29 @@ const MAX_STREAM_LINES: usize = 100_000;              // 100k lines
 | `io.streamWrite` | **有副作用**（消费） | 写入文件系统 |
 | `io.streamForEach` | **有副作用**（消费） | 执行有副作用回调 |
 | `io.streamFold` | **有副作用**（消费） | 触发 I/O |
-| `io.streamWithTimeout` | **无副作用**（包装） | 只添加超时逻辑 |
+| `io.streamWithTimeout` | **有宿主效果**（构造） | 当前读取计时器并启动生产者 |
 
-### 6.2 `is_effectful_builtin()` 更新
+### 6.2 `intrinsic_metadata` 当前事实
 
-```rust
-// crates/n3v3-common/src/lib.rs
+效果分类的 canonical source 是 `crates/n3v3-common/src/action.rs` 的
+`intrinsic_metadata` registry；`.claude/` 文档和 Lean 规则不能再维护独立的
+`is_effectful_builtin` 白名单。当前 registry 将 `streamLines`、`streamBytes`
+归为 `FILE_READ`，`streamCommand` 归为 `PROCESS`，`streamWithTimeout` 归为
+`TIME`，并保留 `streamList` 与变换器为纯操作。
 
-pub fn is_effectful_builtin(name: &str) -> bool {
-    // ... 现有逻辑 ...
-    match parts[0] {
-        "io" => !matches!(
-            parts[1],
-            // 现有纯操作
-            "processSuccess" | "processStdout" | "processCode" | "processStderr" |
-            "command" | "commandWith" | "commandWithRedirects" |
-            "pipeline" | "pipelineWithRedirects" |
-            "redirectStdoutPath" | "redirectStderrPath" | "redirectStdinPath" |
-            "taskCommand" | "taskPipeline" |
-            "eventMap" | "eventFilter" |
-            "reactive" | "liveCurrent" | "liveCancel" |
-            "watchFile" | "every" |
-            "hashString" | "currentSystem" |
-            // 新增：Stream 构造与变换（无副作用）
-            "streamLines" | "streamCommand" | "streamList" | "streamBytes" |
-            "streamMap" | "streamFilter" | "streamTake" | "streamDrop" |
-            "streamWithTimeout"
-        ),
-        _ => false,
-    }
-}
-```
 
 ---
 
 ## 7. 形式化语义 / Formal Semantics (Lean 4)
 
-### 7.1 新增 EffectEval 规则
+### 7.1 当前形式化边界
 
+本节保留 Stream 的设计草图；当前 canonical 规则以
+`formal/n3v3/Spec/Effects.lean` 的 EffectEval v4.3 和
+`.claude/effect-boundary-design.md` 为准。构造器的宿主效果必须按
+`intrinsic_metadata` 的 `FILE_READ`、`PROCESS`、`TIME` 分类传播。
+
+### 7.2 设计草图中的 EffectEval 规则
 ```
 EffectEval v4.2 新增规则 (8 条):
 

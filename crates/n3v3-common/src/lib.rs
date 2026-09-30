@@ -8,11 +8,17 @@
 //! - `Interner`: String interning for efficient symbol handling / 字符串驻留，用于高效的符号处理
 //! - `Arena`: Memory arena for AST allocation / 内存池，用于 AST 分配
 
+mod action;
 mod int;
 mod interner;
 mod span;
 mod trivia;
 
+pub use action::{
+    ActionPlan, EffectSummary, FakeHost, Host, HostError, HostOp, HostOpKind, HostValue,
+    IntrinsicMetadata, OsHost, ProcessPlan, ProcessRedirect, ProcessStage, ProcessStream,
+    intrinsic_metadata, is_effectful_builtin,
+};
 pub use int::{
     Int, int_abs, int_from_f64, int_is_negative, int_is_zero, int_to_f64, int_to_i64, int_to_u32,
     int_to_usize, parse_int, parse_int_radix,
@@ -37,59 +43,5 @@ pub fn kill_process(pid: u32) {
         let _ = std::process::Command::new("taskkill")
             .args(["/F", "/PID", &pid.to_string()])
             .output();
-    }
-}
-
-/// Check if a builtin function name is effectful (touches the host).
-/// This is the single source of truth for effect classification,
-/// shared by n3v3-typeck and n3v3-std to prevent drift.
-pub fn is_effectful_builtin(name: &str) -> bool {
-    // Single-segment effectful builtins (v3.0 short aliases)
-    if matches!(
-        name,
-        "print"
-            | "println"
-            | "read"
-            | "write"
-            | "cmd"
-            | "env"
-            | "exec"
-            | "run"
-            | "sh"
-            | "ls"
-            | "exists"
-            | "pwd"
-            | "home"
-    ) {
-        return true;
-    }
-    let parts: Vec<&str> = name.split('.').collect();
-    if parts.len() >= 2 {
-        match parts[0] {
-            "io" => !matches!(
-                parts[1],
-                // Pure inspectors
-                "processSuccess" | "processStdout" | "processCode" | "processStderr" |
-                // Pure TTY inspectors (no host mutation)
-                "isTTY" | "terminalSize" |
-                // Pure constructors (no I/O)
-                "command" | "commandWith" | "commandWithRedirects" |
-                "pipeline" | "pipelineWithRedirects" |
-                "redirectStdoutPath" | "redirectStderrPath" | "redirectStdinPath" |
-                "taskCommand" | "taskPipeline" |
-                "eventMap" | "eventFilter" |
-                "reactive" | "liveCurrent" | "liveCancel" |
-                "watchFile" | "every" |
-                "hashString" | "currentSystem" |
-                // Stream constructors and transforms (pure, no I/O)
-                "streamLines" | "streamCommand" | "streamList" | "streamBytes" |
-                "streamMap" | "streamFilter" | "streamTake" | "streamDrop" |
-                "streamWithTimeout"
-            ),
-            "fetch" => true,
-            _ => false,
-        }
-    } else {
-        false
     }
 }

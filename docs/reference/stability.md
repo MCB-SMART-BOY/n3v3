@@ -29,16 +29,16 @@ This document defines the stability guarantees for the n3v3 standard library (st
 | `print` | `(value: a) -> Unit` | Print value to stdout without newline |
 | `println` | `(value: a) -> Unit` | Print value to stdout with newline |
 | `io.read` | `(path: String) -> String` | Read file contents from a path |
-| `io.write` | `(msg: String) -> Unit` | Write string to stdout |
+| `io.write` | `(path: String, content: String) -> Unit` | Write string content to a file |
 | `io.readFile` | `(path: String) -> String` | Read entire file contents |
 | `io.writeFile` | `(path: String, content: String) -> Unit` | Write string to file |
 | `io.execCommand` | `(cmd: Command) -> ProcessResult` | Execute a command synchronously |
 | `io.execPipeline` | `(pipeline: Pipeline) -> ProcessResult` | Execute a pipeline synchronously |
 | `io.command` | `(name: String, args: List String) -> Command` | Construct a Command value |
 | `io.pipeline` | `(cmds: List Command) -> Pipeline` | Construct a Pipeline value |
-| `io.args` | `() -> List String` | Get script arguments |
+| `io.args` | `() -> (List String, Record)` | Get script arguments and parsed flags |
 | `io.getEnv` | `(name: String) -> Option String` | Get environment variable |
-| `io.glob` | `(pattern: String) -> List String` | Glob pattern matching |
+| `io.glob` | `(pattern: String) -> List Path` | Glob pattern matching |
 
 Type-checker contract: `io.read(String) -> String`. The runtime additionally accepts a `Path` value, but that wider branch is an implementation convenience rather than a separate typed signature.
 类型检查器契约：`io.read(String) -> String`。运行时额外接受 `Path` 值，但这个更宽的分支属于实现便利，不是独立的类型签名。
@@ -54,16 +54,20 @@ Type-checker contract: `io.read(String) -> String`. The runtime additionally acc
 
 ### List Operations
 
+`len` is the only global list operation. Everything else lives in the `list`
+module and must be qualified (or imported with `use std.list`).
+`len` 是唯一的全局列表操作；其余函数都在 `list` 模块中，必须限定调用或先 `use std.list`。
+
 | API | Signature | Description |
 |-----|-----------|-------------|
 | `len` | `(list: List a) -> Int` | Length of list or string |
-| `head` | `(list: List a) -> Option a` | First element |
-| `tail` | `(list: List a) -> Option (List a)` | All but first element |
-| `last` | `(list: List a) -> Option a` | Last element |
-| `map` | `(f: a -> b, list: List a) -> List b` | Transform each element |
-| `filter` | `(f: a -> Bool, list: List a) -> List a` | Keep elements matching predicate |
-| `fold` | `(f: b -> a -> b, init: b, list: List a) -> b` | Left fold |
-| `foldRight` | `(f: a -> b -> b, init: b, list: List a) -> b` | Right fold |
+| `list.head` | `(list: List a) -> Option a` | First element |
+| `list.tail` | `(list: List a) -> Option (List a)` | All but first element |
+| `list.last` | `(list: List a) -> Option a` | Last element |
+| `list.map` | `(f: a -> b, list: List a) -> List b` | Transform each element |
+| `list.filter` | `(f: a -> Bool, list: List a) -> List a` | Keep elements matching predicate |
+| `list.fold` | `(init: b, f: b -> a -> b, list: List a) -> b` | Left fold — **not available yet**: the runtime returns `list.fold requires runtime closure evaluation` |
+| `list.foldRight` | `(init: b, f: a -> b -> b, list: List a) -> b` | Right fold — **not available yet**: same runtime stub |
 
 ### Type Introspection
 
@@ -76,7 +80,7 @@ Type-checker contract: `io.read(String) -> String`. The runtime additionally acc
 | API | Signature | Description |
 |-----|-----------|-------------|
 | `path.fromString` | `(s: String) -> Path` | Parse string to Path |
-| `path.joinPath` | `(a: Path, b: Path) -> Path` | Join two paths |
+| `path.joinPath` | `(base: Path, child: String) -> Path` | Join a path with a child segment |
 
 ### TTY / Terminal
 
@@ -102,7 +106,7 @@ Type-checker contract: `io.read(String) -> String`. The runtime additionally acc
 |-----|-----------|-------------|
 | `list.map` | `(f: a -> b, list: List a) -> List b` | Map over list |
 | `list.filter` | `(f: a -> Bool, list: List a) -> List a` | Filter list |
-| `list.fold` | `(f: b -> a -> b, init: b, list: List a) -> b` | Left fold |
+| `list.fold` | `(init: b, f: b -> a -> b, list: List a) -> b` | Left fold — **not available yet** (runtime stub returns an error) |
 
 ### Basic Types
 
@@ -212,32 +216,34 @@ On Unix, `n3v3 registry-update`, `n3v3 registry-serve`, and
 
 | API | Signature | Description |
 |-----|-----------|-------------|
-| `io.jobs` | `() -> List Job` | List background jobs |
-| `io.waitAnyJob` | `() -> Job` | Wait for any background job |
+| `io.jobs` | `() -> List {id: Int, state: String}` | List background jobs |
+| `io.waitAnyJob` | `() -> {id: Int, result: ProcessResult}` | Wait for any background job |
 
 ### Effect Control Flow
 
 | API | Signature | Description |
 |-----|-----------|-------------|
-| `io.retry` | `(action: () -> a, maxRetries: Int) -> a` | Retry action on failure |
-| `io.ensure` | `(action: () -> a, cleanup: () -> Unit) -> a` | Ensure cleanup runs |
-| `io.every` | `(ms: Int, action: () -> Unit) -> Timer` | Periodic execution |
-| `io.watchFile` | `(path: String, handler: () -> Unit) -> Watcher` | Watch file for changes |
+| `io.retry` | `(check: () -> Bool, maxAttempts: Int, backoffMs: Int) -> Bool` | Retry until the check passes |
+| `io.ensure` | `(check: () -> Bool, timeoutMs: Int, intervalMs: Int) -> Bool` | Wait until the check passes or the timeout elapses |
+| `io.every` | `(ms: Int) -> Event Int` | Periodic event source |
+| `io.watchFile` | `(path: String) -> Event String` | File-change event source |
 
 ### Reactive System
 
 | API | Signature | Description |
 |-----|-----------|-------------|
-| `io.reactive` | `(initial: a, source: Stream a) -> Reactive a` | Create reactive value |
-| `io.liveNext` | `(r: Reactive a) -> a` | Get next reactive value |
+| `io.reactive` | `(event: Event a) -> Live a` | Turn an event source into a live value |
+| `io.liveNext` | `(live: Live a) -> a` | Get the next value |
+| `io.liveCurrent` | `(live: Live a) -> Option a` | Read the current value without waiting |
+| `io.liveCancel` | `(live: Live a) -> Unit` | Stop the live value |
 
 ### Fetch
 
 | API | Signature | Description |
 |-----|-----------|-------------|
-| `fetch.url` | `(url: String) -> String` | Fetch URL content |
-| `fetch.urlWithHash` | `(url: String, hash: String) -> String` | Fetch with integrity check |
-| `fetch.git` | `(url: String, rev: String) -> String` | Fetch git repository |
+| `fetch.url` | `(url: String) -> {path: String, hash: String, cached: Bool}` | Fetch URL into the store |
+| `fetch.urlWithHash` | `(url: String, hash: String) -> {path: String, hash: String, cached: Bool}` | Fetch with integrity check |
+| `fetch.git` | `(url: String, rev: String) -> {path: String, hash: String, cached: Bool}` | Fetch git repository |
 
 ---
 

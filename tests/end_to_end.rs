@@ -5216,8 +5216,8 @@ fn test_tty_read_key_type_signature() {
 }
 
 #[test]
-fn test_tty_isatty_terminal_size_effect_pure() {
-    // Verify isTTY and terminalSize are classified as pure (not effectful)
+fn test_tty_isatty_terminal_size_evaluate() {
+    // Verify the runtime implementations return values with their host effects enabled.
     let source = r#"
     use std.io = io;
     let a = io.isTTY(0);
@@ -8478,13 +8478,13 @@ fn test_tty_setrawmode_type_signature() {
 }
 
 #[test]
-fn test_effect_isatty_classified_as_pure() {
-    assert!(!n3v3_std::is_effectful_builtin("io.isTTY"));
+fn test_effect_isatty_classified_as_effectful() {
+    assert!(n3v3_std::is_effectful_builtin("io.isTTY"));
 }
 
 #[test]
-fn test_effect_terminalsize_classified_as_pure() {
-    assert!(!n3v3_std::is_effectful_builtin("io.terminalSize"));
+fn test_effect_terminalsize_classified_as_effectful() {
+    assert!(n3v3_std::is_effectful_builtin("io.terminalSize"));
 }
 
 #[test]

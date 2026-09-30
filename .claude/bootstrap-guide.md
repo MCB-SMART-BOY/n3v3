@@ -15,8 +15,12 @@
 
 ---
 
-This document describes the bootstrap package examples kept under `examples/bootstrap/`.
-本文档说明放在 `examples/bootstrap/` 下的 bootstrap 示例包。
+This document describes the planned bootstrap package chain. The illustrative
+package files that used to live under `examples/bootstrap/` were removed from
+the tree; the only bootstrap artifact shipped today is
+`examples/ci-bootstrap.n3v3`, which drives the project's own CI steps.
+本文档描述计划中的 bootstrap 包链。原先放在 `examples/bootstrap/` 下的示例包文件已从仓库移除；
+当前仓库中唯一的 bootstrap 产物是 `examples/ci-bootstrap.n3v3`，它用 n3v3 驱动项目自身的 CI 步骤。
 
 ## 什么是 Bootstrap 基础包? / What Are Bootstrap Packages?
 
@@ -70,7 +74,7 @@ These examples represent the earliest building blocks of a future bootstrap chai
 
 ## 当前包列表 / Current Packages
 
-### ✅ 已定义 / Defined
+### 📋 计划中 / Planned (示例文件已移除 / example files removed)
 
 - **musl** (1.2.4) - Lightweight C standard library
 - **binutils** (2.41) - GNU binary utilities (ld, as, ar, objdump, etc.)
@@ -125,19 +129,20 @@ Bootstrap 包应该尽可能少地依赖其他包，理想情况下只依赖更�
 ### 构建单个包 / Build a Single Package
 
 ```bash
-n3v3 build examples/bootstrap/musl.n3v3
+n3v3 info            # 包与平台信息 / package and platform information
 ```
 
 ### 构建整个工具链 / Build Entire Toolchain
 
 ```bash
-n3v3 build examples/bootstrap/gcc.n3v3  # 会自动构建依赖
+n3v3 build <package.n3v3>   # 会自动构建依赖 / builds dependencies first
 ```
 
 ### 查看包信息 / Show Package Info
 
 ```bash
-n3v3 show examples/bootstrap/musl.n3v3
+n3v3 info                # 包与平台信息 / package and platform information
+n3v3 doc registry        # 包注册表文档 / package registry documentation
 ```
 
 ## 哈希值获取 / Getting Hashes
@@ -165,8 +170,8 @@ sha256sum musl-1.2.4.tar.gz
 
 添加新的 bootstrap 示例包:
 
-1. 在 `examples/bootstrap/` 创建 `.n3v3` 文件
-2. 遵循现有包的结构
+1. 在 `examples/` 下创建 `.n3v3` 文件（例如新的 `examples/<name>.n3v3`）
+2. 遵循现有示例的结构
 3. 确保包含所有必要的元数据
 4. 测试构建过程
 5. 提交 Pull Request

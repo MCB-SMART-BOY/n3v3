@@ -4385,6 +4385,99 @@ fn test_io_exec_command_with_redirect_preserves_error_prefix() {
 }
 
 #[test]
+fn test_io_exec_command_lines_honors_configured_stdin() {
+    let command_builtin =
+        get_builtin("io.commandWith").expect("io.commandWith builtin should exist");
+    let lines_builtin =
+        get_builtin("io.execCommandLines").expect("io.execCommandLines builtin should exist");
+    let (program, args) = stdin_filter_projection_parts();
+    let mut options = HashMap::new();
+    options.insert(
+        "program".to_string(),
+        Value::String(Rc::new(program.to_string())),
+    );
+    options.insert(
+        "args".to_string(),
+        Value::List(Rc::new(
+            args.into_iter()
+                .map(|arg| Value::String(Rc::new(arg.to_string())))
+                .collect(),
+        )),
+    );
+    options.insert(
+        "stdin".to_string(),
+        Value::String(Rc::new("n3v3 line\n".to_string())),
+    );
+    let command = call_builtin(&command_builtin, &[Value::Record(Rc::new(options))])
+        .expect("io.commandWith should succeed");
+    let result =
+        call_builtin(&lines_builtin, &[command]).expect("io.execCommandLines should succeed");
+
+    match result {
+        Value::List(lines) => {
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0], Value::String(Rc::new("n3v3 line".to_string())));
+        }
+        other => panic!("expected List<String>, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_io_exec_command_lines_honors_stdout_redirect() {
+    let temp = TempDir::new().expect("temp dir should exist");
+    let output_path = temp.path().join("command-lines.txt");
+    let command_builtin =
+        get_builtin("io.commandWith").expect("io.commandWith builtin should exist");
+    let redirect_builtin =
+        get_builtin("io.redirectStdoutPath").expect("io.redirectStdoutPath builtin should exist");
+    let configure_builtin = get_builtin("io.commandWithRedirects")
+        .expect("io.commandWithRedirects builtin should exist");
+    let lines_builtin =
+        get_builtin("io.execCommandLines").expect("io.execCommandLines builtin should exist");
+    let (program, args) = stdin_filter_projection_parts();
+    let mut options = HashMap::new();
+    options.insert(
+        "program".to_string(),
+        Value::String(Rc::new(program.to_string())),
+    );
+    options.insert(
+        "args".to_string(),
+        Value::List(Rc::new(
+            args.into_iter()
+                .map(|arg| Value::String(Rc::new(arg.to_string())))
+                .collect(),
+        )),
+    );
+    options.insert(
+        "stdin".to_string(),
+        Value::String(Rc::new("n3v3 line\n".to_string())),
+    );
+    let command = call_builtin(&command_builtin, &[Value::Record(Rc::new(options))])
+        .expect("io.commandWith should succeed");
+    let redirect = call_builtin(
+        &redirect_builtin,
+        &[Value::Path(Rc::new(output_path.clone()))],
+    )
+    .expect("io.redirectStdoutPath should succeed");
+    let command = call_builtin(
+        &configure_builtin,
+        &[command, Value::List(Rc::new(vec![redirect]))],
+    )
+    .expect("io.commandWithRedirects should succeed");
+    let result =
+        call_builtin(&lines_builtin, &[command]).expect("io.execCommandLines should succeed");
+
+    match result {
+        Value::List(lines) => assert!(lines.is_empty()),
+        other => panic!("expected List<String>, got {:?}", other),
+    }
+    assert_eq!(
+        fs::read_to_string(output_path).expect("redirected output should exist"),
+        "n3v3 line\n"
+    );
+}
+
+#[test]
 fn test_io_exec_command_returns_process_result_runtime_value() {
     let command_builtin = get_builtin("io.command").expect("io.command builtin should exist");
     let exec_builtin = get_builtin("io.execCommand").expect("io.execCommand builtin should exist");

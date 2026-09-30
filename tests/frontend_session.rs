@@ -930,6 +930,100 @@ fn test_frontend_session_returns_only_evaluable_loaded_modules_in_dependency_ord
 }
 
 #[test]
+fn test_frontend_session_hides_clean_dependency_action_plans_when_another_dependency_fails() {
+    let temp_dir = TempDir::new().unwrap();
+    create_test_module(
+        temp_dir.path(),
+        &["clean"],
+        r#"
+            use std.io = io;
+            let content = io.readFile("config.n3v3");
+        "#,
+    );
+    create_test_module(temp_dir.path(), &["broken"], "fn bad() = 1 + true;");
+
+    let ast = parse_ok(
+        r#"
+            use clean (content);
+            use broken (bad);
+            fn compute() = 1;
+        "#,
+    );
+
+    let mut session = FrontendSession::new(temp_dir.path());
+    let build = session
+        .build_module_from_ast(
+            &ast,
+            "repl".to_string(),
+            Vec::new(),
+            &SessionBuildInputs::default(),
+        )
+        .expect("session build should succeed");
+    let current_analysis = session.analyze_module(&build.module);
+    assert!(
+        current_analysis.semantics.action_plans.is_empty(),
+        "current action plans must be hidden when a dependency fails: {:?}",
+        current_analysis
+    );
+
+    let loaded = session.loaded_modules_in_order();
+    assert!(
+        loaded.iter().any(|entry| {
+            entry
+                .analysis
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == Severity::Error)
+        }),
+        "expected one dependency to have a blocking diagnostic: {:?}",
+        loaded
+    );
+    assert!(
+        loaded
+            .iter()
+            .all(|entry| entry.analysis.semantics.action_plans.is_empty()),
+        "clean dependency action plans must be hidden when another dependency fails: {:?}",
+        loaded
+    );
+}
+
+#[test]
+fn test_frontend_session_rechecks_prior_dependency_errors_before_new_input() {
+    let temp_dir = TempDir::new().unwrap();
+    create_test_module(temp_dir.path(), &["broken"], "fn bad() = 1 + true;");
+
+    let mut session = FrontendSession::new(temp_dir.path());
+    let first = parse_ok("use broken (bad); fn first() = 1;");
+    let first_error = session
+        .prepare_checked_module_with_context(
+            &first,
+            &SessionModuleContext::repl(),
+            &SessionVisibleState::default(),
+        )
+        .expect_err("the first input should reject the broken dependency");
+    assert!(matches!(first_error, SessionCheckError::LoadedModules(_)));
+
+    let second = parse_ok(
+        r#"
+            use std.io = io;
+            let content = io.readFile("config.n3v3");
+        "#,
+    );
+    let second_error = session
+        .prepare_checked_module_with_context(
+            &second,
+            &SessionModuleContext::repl(),
+            &SessionVisibleState::default(),
+        )
+        .expect_err("a prior broken dependency must block later checked input");
+    let SessionCheckError::LoadedModules(entries) = second_error else {
+        panic!("expected prior dependency diagnostics, got {second_error:?}");
+    };
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].file_path.ends_with("broken.n3v3"));
+}
+
+#[test]
 fn test_frontend_session_resolves_file_module_context_under_current_root() {
     let temp_dir = TempDir::new().unwrap();
     std::fs::create_dir_all(temp_dir.path().join("app")).unwrap();

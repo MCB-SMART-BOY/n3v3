@@ -3379,3 +3379,32 @@ fn test_typeck_detects_match_arm_mismatch() {
     ",
     );
 }
+#[test]
+fn test_typeck_live_cancel_rejects_non_live_argument() {
+    check_has_errors(
+        r#"
+        use std.io = io;
+        let x = io.liveCancel(1);
+        "#,
+    );
+}
+
+#[test]
+fn test_typeck_jobs_rejects_arguments() {
+    check_has_errors(
+        r#"
+        use std.io = io;
+        let x = io.jobs(1);
+        "#,
+    );
+}
+
+#[test]
+fn test_typeck_wait_any_job_rejects_arguments() {
+    check_has_errors(
+        r#"
+        use std.io = io;
+        let x = io.waitAnyJob(1);
+        "#,
+    );
+}

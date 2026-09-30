@@ -165,6 +165,19 @@ pub enum ExprKind {
 - Tooling consumers use canonical spans for destructured/or-pattern bindings
   and constructor references; synthetic item mappings remain an explicit
   boundary for future convergence.
+- `n3v3-frontend` publishes a non-executing `ModuleSemantics.action_plans`
+  side table collected from canonical HIR. The current typed operation is
+  literal `io.readFile` → `HostOp::ReadFile`; dynamic host paths do not get a
+  fabricated plan.
+
+When any module in a frontend analysis has a blocking diagnostic, the frontend
+redacts `action_plans` from all exposed module semantics. Evaluation consumers
+must use diagnostic-clean HIR entries rather than inspection side tables.
+
+The current execution-layer ProcessPlan adapter is separate from this HIR side
+table. It lowers existing runtime `Command`/`Pipeline` values only at explicit
+blocking execution boundaries; it does not add a new HIR node, expose a
+`Job<T>` type, or make Stream/Event/Live lifecycles part of HIR.
 
 ## Unsupported-node policy
 

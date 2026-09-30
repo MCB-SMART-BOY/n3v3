@@ -63,6 +63,13 @@ n3v3 run examples/io/files.n3v3
 ## Bootstrap
 
 ```bash
-ls examples/bootstrap
-n3v3 show examples/bootstrap/musl.n3v3
+n3v3 run examples/ci-bootstrap.n3v3
 ```
+
+`examples/ci-bootstrap.n3v3` is the only bootstrap example in the tree: it
+drives the project's own CI steps (format, clippy, build, test) from n3v3.
+The earlier toolchain package files (`examples/bootstrap/*.n3v3`) were removed;
+the bootstrap chain below is design intent, not shipped code.
+`examples/ci-bootstrap.n3v3` 是仓库中唯一的 bootstrap 示例：用 n3v3 驱动项目自身的
+CI 步骤（format、clippy、build、test）。早期的工具链包文件（`examples/bootstrap/*.n3v3`）
+已移除；下文的自举顺序属于设计意图，不是已交付的代码。

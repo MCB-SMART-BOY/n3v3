@@ -753,7 +753,7 @@ impl FrontendSession {
             .with_effectful_definitions(global_effectful_definitions.iter().copied());
             checker.check(module);
             global_effectful_definitions.extend(checker.effectful_definitions().iter().copied());
-            let semantics = collect_module_semantics(&checker);
+            let semantics = collect_module_semantics(&checker, module);
             let diagnostics =
                 rewrite_diagnostics_with_names(checker.diagnostics_ref().to_vec(), &type_names);
 
@@ -768,6 +768,14 @@ impl FrontendSession {
             });
         }
 
+        let has_blocking_diagnostics = entries
+            .iter()
+            .any(|entry| diagnostics_have_errors(&entry.analysis.diagnostics));
+        if has_blocking_diagnostics {
+            for entry in &mut entries {
+                entry.analysis.semantics.action_plans.clear();
+            }
+        }
         entries
     }
 
@@ -813,8 +821,15 @@ impl FrontendSession {
         )
         .with_repl_mode(true);
 
+        let mut has_blocking_dependency_diagnostics = self.loader.load_order().iter().any(|id| {
+            self.loader
+                .parsed_diagnostics(*id)
+                .is_some_and(diagnostics_have_errors)
+        });
         for module in modules.iter().take(modules.len() - 1) {
             checker.check(module);
+            has_blocking_dependency_diagnostics |=
+                diagnostics_have_errors(checker.diagnostics_ref());
             checker.clear_diagnostics();
             checker.clear_method_resolutions();
             checker.clear_assoc_projection_resolutions();
@@ -824,10 +839,14 @@ impl FrontendSession {
         let type_names = self.collect_type_names(Some(current_module));
         let diagnostics =
             rewrite_diagnostics_with_names(checker.diagnostics_ref().to_vec(), &type_names);
+        let mut semantics = collect_module_semantics(&checker, current_module);
+        if has_blocking_dependency_diagnostics {
+            semantics.action_plans.clear();
+        }
 
         ModuleAnalysis {
             diagnostics,
-            semantics: collect_module_semantics(&checker),
+            semantics,
         }
     }
 
@@ -925,17 +944,17 @@ impl FrontendSession {
         )
     }
 
-    /// Collect diagnostics for newly loaded modules using canonical frontend analysis.
-    /// 使用规范 frontend 分析收集新加载模块的诊断。
+    /// Collect diagnostics for selected loaded modules using canonical frontend analysis.
+    /// 使用规范 frontend 分析收集指定已加载模块的诊断。
     pub fn loaded_module_diagnostics(
         &self,
-        newly_loaded: &[ModuleId],
+        module_ids: &[ModuleId],
     ) -> Vec<SessionLoadedDiagnostics> {
-        let pending: std::collections::HashSet<_> = newly_loaded.iter().copied().collect();
+        let selected: std::collections::HashSet<_> = module_ids.iter().copied().collect();
         let mut entries = Vec::new();
 
         for entry in self.loaded_modules_in_order() {
-            if !pending.contains(&entry.module_id) {
+            if !selected.contains(&entry.module_id) {
                 continue;
             }
             if diagnostics_have_errors(&entry.analysis.diagnostics) {
@@ -1366,7 +1385,8 @@ impl FrontendSession {
         &self,
         prepared: SessionPreparedModule,
     ) -> Result<SessionCheckedModule, SessionCheckError> {
-        let loaded_module_diagnostics = self.loaded_module_diagnostics(&prepared.newly_loaded);
+        let loaded_module_ids = self.loader.load_order().to_vec();
+        let loaded_module_diagnostics = self.loaded_module_diagnostics(&loaded_module_ids);
         if !loaded_module_diagnostics.is_empty() {
             return Err(SessionCheckError::LoadedModules(loaded_module_diagnostics));
         }

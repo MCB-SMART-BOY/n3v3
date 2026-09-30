@@ -1884,14 +1884,17 @@ fn builtin_signature(name: &str) -> Option<String> {
             Some("io.awaitTaskWithTimeout(task: Task<T>, ms: Int) -> Option<T>".to_string())
         }
         "io.cancel" => Some("io.cancel(task: Task<T>) -> ()".to_string()),
+        "io.liveNext" => Some("io.liveNext(live: Live<T>) -> T".to_string()),
+        "io.liveCurrent" => Some("io.liveCurrent(live: Live<T>) -> Option<T>".to_string()),
+        "io.liveCancel" => Some("io.liveCancel(live: Live<T>) -> ()".to_string()),
         // IO - TTY / Job / Misc (8)
         "io.isTTY" => Some("io.isTTY(fd: Int) -> Bool".to_string()),
         "io.terminalSize" => Some("io.terminalSize() -> Option<(Int, Int)>".to_string()),
         "io.setRawMode" => Some("io.setRawMode(fd: Int, enable: Bool) -> ()".to_string()),
         "io.resetTerminal" => Some("io.resetTerminal(fd: Int) -> ()".to_string()),
         "io.readKey" => Some("io.readKey(fd: Int) -> Int".to_string()),
-        "io.jobs" => Some("io.jobs() -> List<Job>".to_string()),
-        "io.waitAnyJob" => Some("io.waitAnyJob() -> ProcessResult".to_string()),
+        "io.jobs" => Some("io.jobs() -> List<{id: Int, state: String}>".to_string()),
+        "io.waitAnyJob" => Some("io.waitAnyJob() -> {id: Int, result: ProcessResult}".to_string()),
         "io.kill" => Some("io.kill(pid: Int, signal: Int) -> ()".to_string()),
         "io.args" => Some("io.args() -> List<String>".to_string()),
         // List functions (12)
@@ -2030,15 +2033,16 @@ fn completion_documentation(label: &str, _kind: Option<CompletionItemKind>) -> O
             Some("Creates a `Stream<T>` from a `List<T>`.\n\n**Effect:** Stream".to_string())
         }
         "io.streamLines" => Some(
-            "Streams lines from a file as `Stream<String>`.\n\n**Effect:** Stream + I/O"
+            "Streams lines from a file as `Stream<String>`.\n\n**Effect:** Stream + File I/O"
                 .to_string(),
         ),
         "io.streamCommand" => {
             Some("Streams stdout lines from a command.\n\n**Effect:** Stream + Process".to_string())
         }
-        "io.streamBytes" => {
-            Some("Streams byte chunks from a file.\n\n**Effect:** Stream + I/O".to_string())
-        }
+        "io.streamBytes" => Some(
+            "Streams byte chunks from a file as `Stream<Bytes>`.\n\n**Effect:** Stream + File I/O"
+                .to_string(),
+        ),
         "io.streamMap" => Some(
             "Transforms each element of a stream via closure.\n\n**Effect:** Stream".to_string(),
         ),
@@ -2063,9 +2067,9 @@ fn completion_documentation(label: &str, _kind: Option<CompletionItemKind>) -> O
         "io.streamFold" => {
             Some("Folds a stream with accumulator function.\n\n**Effect:** Stream".to_string())
         }
-        "io.streamWithTimeout" => {
-            Some("Adds timeout to stream (wraps in `Option`).\n\n**Effect:** Stream".to_string())
-        }
+        "io.streamWithTimeout" => Some(
+            "Adds timeout to stream (wraps in `Option`).\n\n**Effect:** Stream + Time".to_string(),
+        ),
         // IO - Task
         "io.taskCommand" => Some(
             "Creates a `Task` from a command for async execution.\n\n**Effect:** Task".to_string(),
@@ -2082,9 +2086,9 @@ fn completion_documentation(label: &str, _kind: Option<CompletionItemKind>) -> O
         }
         "io.cancel" => Some("Cancels a running task.\n\n**Effect:** Task".to_string()),
         // IO - TTY / Job
-        "io.isTTY" => Some("Returns `true` if fd is a terminal.\n\n**Effect:** Pure".to_string()),
+        "io.isTTY" => Some("Returns `true` if fd is a terminal.\n\n**Effect:** Device".to_string()),
         "io.terminalSize" => Some(
-            "Returns terminal dimensions as `Option<(rows, cols)>`.\n\n**Effect:** Pure"
+            "Returns terminal dimensions as `Option<(rows, cols)>`.\n\n**Effect:** Device"
                 .to_string(),
         ),
         "io.setRawMode" => {
@@ -2096,9 +2100,14 @@ fn completion_documentation(label: &str, _kind: Option<CompletionItemKind>) -> O
         "io.readKey" => {
             Some("Reads a single byte from fd (requires raw mode).\n\n**Effect:** I/O".to_string())
         }
-        "io.jobs" => Some("Lists running background jobs.\n\n**Effect:** I/O".to_string()),
+        "io.liveNext" => Some("Gets the next reactive value.\n\n**Effect:** Host".to_string()),
+        "io.liveCurrent" => Some(
+            "Reads the current reactive value without waiting.\n\n**Effect:** Host".to_string(),
+        ),
+        "io.liveCancel" => Some("Stops a reactive value.\n\n**Effect:** Host".to_string()),
+        "io.jobs" => Some("Lists running background jobs.\n\n**Effect:** Task".to_string()),
         "io.waitAnyJob" => {
-            Some("Waits for any background job to complete.\n\n**Effect:** Process".to_string())
+            Some("Waits for any background job to complete.\n\n**Effect:** Time".to_string())
         }
         "io.kill" => Some("Kills a process by PID with signal.\n\n**Effect:** Process".to_string()),
         "io.args" => {

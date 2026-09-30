@@ -3845,6 +3845,40 @@ mod tests {
     }
 
     #[test]
+    fn repl_rechecks_prior_dependency_errors_before_new_input() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join("broken.n3v3"), "fn bad() = 1 + true;").unwrap();
+
+        let mut runtime = ReplHirState::with_root_dir(temp_dir.path().to_path_buf());
+        let mut semantic = ReplSemanticState::with_root_dir(temp_dir.path());
+        let context = ReplInputContext::repl();
+
+        let first_error = evaluate_repl_input(
+            "use broken (bad);",
+            true,
+            &context,
+            &mut runtime,
+            &mut semantic,
+        )
+        .expect_err("the first input should report the broken dependency");
+        assert!(matches!(first_error, SessionDisplayError::LoadedModules(_)));
+
+        let second_error = evaluate_repl_input(
+            r#"use std.io = io; let content = io.readFile("config.n3v3");"#,
+            true,
+            &context,
+            &mut runtime,
+            &mut semantic,
+        )
+        .expect_err("a prior broken dependency must block later input");
+        let SessionDisplayError::LoadedModules(entries) = second_error else {
+            panic!("expected prior dependency diagnostics, got {second_error:?}");
+        };
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].file_path.ends_with("broken.n3v3"));
+    }
+
+    #[test]
     fn repl_can_switch_project_root_after_clear_for_load() {
         let first = TempDir::new().unwrap();
         let second = TempDir::new().unwrap();

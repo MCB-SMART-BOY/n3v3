@@ -6,8 +6,11 @@
 //! 本 crate 提供稳定的 API，用于在一次流程中完成解析、降级与类型检查，
 //! 便于 LSP 和 CLI 等工具复用。
 
+mod action_plans;
 mod driver;
 mod session;
+
+use action_plans::collect_action_plans;
 
 pub use driver::{
     FrontendDriver, FrontendError, ModuleAnalysis, ModuleParseResult, ProgramAnalysis,
@@ -27,7 +30,7 @@ pub use session::{
     SessionSourceCheckError, SessionVisibleState,
 };
 
-use n3v3_common::Span;
+use n3v3_common::{ActionPlan, Span};
 use n3v3_hir::{ModuleId, lower};
 use n3v3_parser::parse;
 use n3v3_typeck::{TypeChecker, format_builtin_named_type};
@@ -75,9 +78,18 @@ pub struct ModuleSemantics {
     /// Definitions inferred as effectful in this module or imported from dependencies.
     /// 本模块或依赖中推断为有副作用的定义。
     pub effectful_definitions: HashSet<DefId>,
+    /// Typed host action plans keyed by their HIR expression span.
+    /// 按 HIR 表达式 span 索引的类型化宿主动作计划。
+    pub action_plans: HashMap<Span, ActionPlan>,
 }
 
 impl ModuleSemantics {
+    /// Look up a typed host action plan by expression span.
+    /// 按表达式 span 查询类型化宿主动作计划。
+    pub fn action_plan(&self, span: Span) -> Option<&ActionPlan> {
+        self.action_plans.get(&span)
+    }
+
     /// Look up the type of a global definition.
     /// 查询全局定义的类型。
     pub fn global_type(&self, def_id: DefId) -> Option<&Ty> {
@@ -280,7 +292,10 @@ pub fn analyze_source(source: &str) -> AnalysisResult {
     let hir = lower(&ast);
     let mut checker = TypeChecker::new();
     checker.check(&hir);
-    let semantics = collect_module_semantics(&checker);
+    let mut semantics = collect_module_semantics(&checker, &hir);
+    if diagnostics_have_errors(&diagnostics) {
+        semantics.action_plans.clear();
+    }
     let method_resolutions = checker.method_resolutions().clone();
     diagnostics.extend(rewrite_diagnostics_with_module_names(
         checker.diagnostics(),
@@ -302,7 +317,7 @@ pub fn analyze_ast(ast: &SourceFile) -> AnalysisResult {
     let hir = lower(ast);
     let mut checker = TypeChecker::new();
     checker.check(&hir);
-    let semantics = collect_module_semantics(&checker);
+    let semantics = collect_module_semantics(&checker, &hir);
     let method_resolutions = checker.method_resolutions().clone();
     let diagnostics = rewrite_diagnostics_with_module_names(checker.diagnostics(), &hir);
 
@@ -328,9 +343,9 @@ pub fn analyze_snippet_ast(
         vec!["__eval__".to_string()],
         &SessionBuildInputs::default(),
     )?;
-    let analysis = session.analyze_module(&build.module);
+    let mut analysis = session.analyze_module(&build.module);
     let loaded_pending: std::collections::HashSet<_> = build.newly_loaded.iter().copied().collect();
-    let loaded_modules = session
+    let mut loaded_modules = session
         .loaded_modules_in_order()
         .into_iter()
         .filter(|entry| loaded_pending.contains(&entry.module_id))
@@ -345,7 +360,17 @@ pub fn analyze_snippet_ast(
                 semantics: entry.analysis.semantics,
             }
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let has_blocking_diagnostics = diagnostics_have_errors(&analysis.diagnostics)
+        || loaded_modules
+            .iter()
+            .any(|entry| diagnostics_have_errors(&entry.diagnostics));
+    if has_blocking_diagnostics {
+        analysis.semantics.action_plans.clear();
+        for entry in &mut loaded_modules {
+            entry.semantics.action_plans.clear();
+        }
+    }
     let evaluable_loaded_modules = session
         .evaluable_loaded_modules_in_order()
         .into_iter()
@@ -361,7 +386,7 @@ pub fn analyze_snippet_ast(
     })
 }
 
-pub(crate) fn collect_module_semantics(checker: &TypeChecker) -> ModuleSemantics {
+pub(crate) fn collect_module_semantics(checker: &TypeChecker, module: &Module) -> ModuleSemantics {
     let global_types = checker
         .global_types_ref()
         .keys()
@@ -387,6 +412,12 @@ pub(crate) fn collect_module_semantics(checker: &TypeChecker) -> ModuleSemantics
         .filter_map(|span| checker.expr_type(*span).map(|ty| (*span, ty)))
         .collect();
 
+    let action_plans = if diagnostics_have_errors(checker.diagnostics_ref()) {
+        HashMap::new()
+    } else {
+        collect_action_plans(module)
+    };
+
     ModuleSemantics {
         method_resolutions: checker.method_resolutions().clone(),
         assoc_projection_resolutions,
@@ -396,6 +427,7 @@ pub(crate) fn collect_module_semantics(checker: &TypeChecker) -> ModuleSemantics
         expr_types,
         global_names: checker.global_names_ref().clone(),
         effectful_definitions: checker.effectful_definitions().clone(),
+        action_plans,
     }
 }
 

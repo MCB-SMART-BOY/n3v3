@@ -25,8 +25,8 @@
 curl -fsSL https://github.com/MCB-SMART-BOY/n3v3/releases/latest/download/n3v3-x86_64-unknown-linux-gnu.tar.gz | tar xz
 sudo mv n3v3 /usr/local/bin/
 
-# Or Arch Linux
-yay -S n3v3
+# Or Arch Linux (AUR package: n3v3-bin)
+yay -S n3v3-bin
 
 # From source / 从源码安装
 git clone https://github.com/MCB-SMART-BOY/n3v3.git && cd n3v3
@@ -35,6 +35,7 @@ cargo install --path n3v3-cli --locked
 # Or build without installing into PATH / 或仅构建二进制而不安装到 PATH
 # cargo build --release
 # ./target/release/n3v3 repl
+```
 
 ## Step 2: Play with REPL (1 min) / 第二步：玩玩 REPL（1 分钟）
 
@@ -46,7 +47,7 @@ n3v3> double = |x| x * 2
 n3v3> double(21)
 42
 n3v3> { name = "hacker", power = 9001 }
-{power = 9001, name = "hacker"}
+{power = 9001, name = "hacker"}   # 字段打印顺序不保证
 n3v3> { a = 10; b = 20; a + b }
 30
 n3v3> :quit
@@ -77,7 +78,7 @@ Run it:
 
 ```bash
 $ n3v3 run hello.n3v3
-[OK] #{greeting = "Hello, World!", magic = 120}
+[OK] #{greeting = "Hello, World!", magic = 120}   # 字段打印顺序不保证
 
 $ n3v3 check hello.n3v3
 [OK] OK - No errors found

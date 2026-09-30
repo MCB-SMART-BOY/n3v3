@@ -33,8 +33,9 @@ Source: fn f() = io.readFile("config.n3v3")
 ## Effect Taxonomy
 
 The implementation records effectfulness on HIR function definitions and on the
-type checker's effectful-definition set. Builtin classification is centralized
-in `n3v3_common::is_effectful_builtin`; `n3v3_std` delegates to that registry.
+type checker's effectful-definition set. The canonical builtin registry is
+`n3v3_common::intrinsic_metadata`; `is_effectful_builtin` derives its boolean
+compatibility answer from the registry, and `n3v3_std` delegates to it.
 
 ```rust
 pub struct FnDef {
@@ -42,10 +43,12 @@ pub struct FnDef {
     // name, params, return_ty, body, ...
 }
 
-fn is_effectful_builtin(name: &str) -> bool {
-    n3v3_common::is_effectful_builtin(name)
-}
+let metadata = n3v3_common::intrinsic_metadata(name);
+let is_effectful = metadata.is_some_and(|item| item.effects.is_host_effect());
 ```
+
+The registry also records the narrower `EffectSummary` and the typed
+`HostOpKind` when a migration slice has an executable host operation.
 
 ## Effect Propagation
 
@@ -59,8 +62,32 @@ pure function
 The type checker propagates effectful definitions through direct calls and
 resolved method calls before `n3v3 check` enforces the effect boundary.
 ```
+## Action-plan shadow path
+
+`n3v3-frontend` collects a non-executing action-plan side table from canonical
+HIR. The current slice recognizes literal `io.readFile("path")` calls and
+stores an `ActionPlan` containing `HostOp::ReadFile`; dynamic paths remain
+ordinary HIR calls until their typed host operation is designed.
+
+`ModuleSemantics.action_plans` is inspection data only. If any module in a
+frontend analysis has blocking diagnostics, plans are empty in every exposed
+module semantics table. `check`, LSP, formatter, and pure analysis do not
+execute it. `ActionPlan::execute` requires an explicit
+`n3v3_common::Host`; `FakeHost` is deterministic for tests, while
+`OsHost::new(root)` is a root-scoped OS host that rejects absolute paths,
+parent traversal, and symlinks escaping the root.
+
+The first Process IR slice is execution-layer only: `n3v3-common::ProcessPlan`
+owns command stages and redirects, while `n3v3-std` lowers existing runtime
+values before blocking command, pipeline, `execCommandLines`, and ordinary Task
+await. It does not expand `ModuleSemantics.action_plans`, execute during analysis,
+replace integer spawn IDs, or cover evaluator-owned streaming, timeout, spawn,
+Event, or Live paths.
+
+---
 
 ## EffectEval 34 Rules (Lean Formalization)
+
 
 34 rules across 7 categories:
 
@@ -110,9 +137,11 @@ clean check prints `[OK] OK - No errors found`.
 
 | Stage | File | What It Does |
 |-------|------|-------------|
+| Registry | `crates/n3v3-common/src/action.rs` | Owns intrinsic effect metadata, `EffectSummary`, and current typed host-op kinds |
 | Parser | `crates/n3v3-parser/src/parser.rs` | Parses builtin calls (legacy `effect` syntax remains accepted) |
 | HIR | `crates/n3v3-hir/src/resolve.rs` | Resolves builtin names to `ExprKind::Builtin` |
 | Typeck | `crates/n3v3-typeck/src/check/mod.rs` | Infers and checks effect propagation |
+| Frontend | `crates/n3v3-frontend/src/action_plans.rs` | Collects non-executing `ActionPlan` side-table entries from canonical HIR |
 | Eval | `crates/n3v3-eval/src/eval.rs` | Resolves and applies builtin values |
 | Stdlib | `crates/n3v3-std/src/lib.rs` | Delegates effect classification to the shared registry |
 | Lean | `formal/n3v3/Spec/Effects.lean` | EffectEval v4.3 (34 rules) |
@@ -121,6 +150,8 @@ clean check prints `[OK] OK - No errors found`.
 
 | File | What |
 |------|------|
+| `crates/n3v3-common/src/action.rs` | Intrinsic metadata, effect summaries, typed host operations, and host boundary |
+| `crates/n3v3-frontend/src/action_plans.rs` | Canonical-HIR action-plan collection |
 | `crates/n3v3-typeck/src/check/mod.rs` | Effect inference in the type checker |
 | `crates/n3v3-eval/src/eval.rs` | Builtin/effect dispatch in the HIR evaluator |
 | `crates/n3v3-std/src/lib.rs` | Standard-library builtin facade |

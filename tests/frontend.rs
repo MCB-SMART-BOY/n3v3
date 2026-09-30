@@ -725,6 +725,47 @@ fn test_frontend_snippet_accepts_local_imports_against_root_dir() {
 }
 
 #[test]
+fn test_frontend_snippet_hides_dependency_action_plans_when_root_has_errors() {
+    let temp_dir = TempDir::new().unwrap();
+    fs::write(
+        temp_dir.path().join("math.n3v3"),
+        r#"
+            use std.io = io;
+            let content = io.readFile("config.n3v3");
+        "#,
+    )
+    .unwrap();
+
+    let source = "use math (content); let broken: Int = true;";
+    let (ast, diagnostics) = parse(source);
+    assert!(
+        diagnostics.is_empty(),
+        "unexpected parse diagnostics: {:?}",
+        diagnostics
+    );
+
+    let analysis =
+        analyze_snippet_ast(&ast, temp_dir.path()).expect("snippet analysis should succeed");
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == n3v3_diagnostic::Severity::Error),
+        "expected root type diagnostics, got {:?}",
+        analysis.diagnostics
+    );
+    assert!(analysis.semantics.action_plans.is_empty());
+    assert!(
+        analysis
+            .loaded_modules
+            .iter()
+            .all(|entry| entry.semantics.action_plans.is_empty()),
+        "dependency action plans must be hidden when the snippet has errors: {:?}",
+        analysis.loaded_modules
+    );
+}
+
+#[test]
 fn test_frontend_snippet_reports_loaded_module_diagnostics() {
     let temp_dir = TempDir::new().unwrap();
     fs::write(temp_dir.path().join("math.n3v3"), "fn add(x, y) = ;").unwrap();

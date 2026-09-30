@@ -113,7 +113,7 @@ true  false
 -- Interpolated strings
 `hello {name}`
 
--- Path literals (currently strings)
+-- Path literals (first-class `Path` values)
 ./relative  ../parent  /absolute
 ```
 
@@ -660,8 +660,8 @@ let result = io.awaitTaskWithTimeout(task, 5000);
 - 以 `#!/usr/bin/env n3v3` 开头的 `.n3v3` 文件可直接执行
 - The shebang line is automatically stripped before parsing
 - Shebang 行在解析前自动去除
-- Remaining CLI arguments are available via `io.args() -> List[String]`
-- 剩余 CLI 参数可通过 `io.args() -> List[String]` 获取
+- Remaining CLI arguments are available via `io.args() -> (List<String>, Record)`
+- 剩余 CLI 参数可通过 `io.args() -> (List<String>, Record)` 获取（第一个元素是位置参数列表，第二个是解析后的 flag 记录）
 
 ---
 

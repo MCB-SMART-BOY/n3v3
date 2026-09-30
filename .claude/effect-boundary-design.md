@@ -30,11 +30,11 @@
 | 新功能的语义定义 | 参考实现，容易分叉 | 先查规范，再写代码 |
 | Rust 与 Lean 的对齐 | 手动比对，容易漂移 | 有对照表，CI 验证 |
 | 安全审计 | 每次重新审查全部代码 | 只审查边界变更 |
-| 效果边界判定 | 靠 `is_effectful_builtin()` 隐式定义 | 设计文档显式声明 |
+| 效果边界判定 | 靠 `is_effectful_builtin()` 隐式定义 | 由 intrinsic metadata 显式声明，布尔接口兼容旧调用方 |
 
 ### 1.3 核心原则
 
-1. **所有有副作用的 builtin 在 `is_effectful_builtin()` 中注册（用户代码中的 effect 自动推导）**：每个有副作用的 builtin 必须在 `is_effectful_builtin()` 中注册
+1. **所有有副作用的 builtin 在 `intrinsic_metadata()` 中注册（用户代码中的 effect 自动推导）**：`is_effectful_builtin()` 只从共享注册表派生兼容布尔结果
 2. **所有副作用必须在 Lean 规范中有对应规则**：EffectEval 规则覆盖 100% 的副作用路径
 3. **安全约束是规则的显式前提**：大小限制、路径安全检查、环境变量过滤不是"实现细节"，而是语义规则的必要组成部分
 4. **纯函数化原则**：进程执行的结果是 `ProcessResult`（不可变值），不是隐式状态变更
@@ -66,35 +66,31 @@
 
 有效果的表达式走 `EffectEval` 语义（`Spec/Effects.lean`），需要 `IOState` 来追踪累积输出。
 
-### 2.3 边界判定函数
+### 2.3 边界判定函数与动作元数据
 
-在 Rust 实现中，`n3v3_common::is_effectful_builtin(name)` 是**单一的、规范的效果判定函数**：
+Rust 侧的规范注册表是 `n3v3_common::intrinsic_metadata(name)`，位于
+`crates/n3v3-common/src/action.rs`。它同时提供：
+
+- `EffectSummary`：从 `HOST` 细化到文件读写、进程、任务、输出、网络、时间和设备；
+- `HostOpKind`：当前迁移阶段已经拥有类型化宿主操作的 builtin 种类；
+- `is_effectful_builtin(name)`：为既有 typeck/stdlib 调用方保留的布尔兼容接口，
+  其结果直接来自上述注册表。
 
 ```rust
-// crates/n3v3-common/src/lib.rs
-pub fn is_effectful_builtin(name: &str) -> bool {
-    // 顶层输出函数
-    if name == "print" || name == "println" { return true; }
-    // io.* 模块中，除了纯构造函数和纯检查器之外的都有效果
-    match parts[0] {
-        "io" => !matches!(parts[1],
-            "processSuccess" | "processStdout" | "processCode" | "processStderr" |
-            "command" | "commandWith" | "commandWithRedirects" |
-            "pipeline" | "pipelineWithRedirects" |
-            "redirectStdoutPath" | "redirectStderrPath" | "redirectStdinPath" |
-            "taskCommand" | "taskPipeline" |
-            "eventMap" | "eventFilter" |
-            "reactive" | "liveCurrent" | "liveCancel" |
-            "watchFile" | "every" |
-            "hashString" | "currentSystem"
-        ),
-        "fetch" => true,
-        _ => false,
-    }
-}
+let metadata = n3v3_common::intrinsic_metadata(name);
+let is_effectful = metadata.is_some_and(|item| item.effects.is_host_effect());
 ```
 
-**这条函数是效果边界的 Rust 侧权威来源。** 当新增效果 builtin 时，必须在同一个 PR 中更新此函数。
+当前第一阶段只把字面量 `io.readFile("path")` 收集为
+`n3v3_common::ActionPlan`（其中操作为 `HostOp::ReadFile`）。frontend 将计划放入
+`ModuleSemantics.action_plans`，用于检查和工具观察；有阻断诊断时不发布计划，
+收集动作计划不会执行宿主操作。真正执行必须显式提供 `Host`，测试使用
+`FakeHost`，操作系统实现使用 `OsHost::new(root)`；OS host 只允许 root 下的
+相对路径，并拒绝绝对路径、`..` 和越过 root 的 symlink。动态路径暂不伪造计划。
+
+**注册表是效果边界的 Rust 侧权威来源。** 新增 effectful builtin 时，必须更新
+`intrinsic_metadata`，同步 typeck 类型签名、evaluator 分发、标准库实现和
+`Spec/Effects.lean`；若已有类型化 `HostOp`，同时补齐 fake/real host 与行为测试。
 
 ---
 
@@ -163,14 +159,14 @@ pub fn is_effectful_builtin(name: &str) -> bool {
 | `io.processCode` | 获取退出码 |
 | `io.processStderr` | 获取 stderr 内容 |
 
-#### G. Stream 操作（Phase 4 新增，已完成 ✅）
+#### G. Stream 操作（构造效果尚未收敛）
 
 | Builtin | 模式 | 效果 | EffectEval 规则 | 说明 |
 |---------|------|------|----------------|------|
 | `io.streamList` | 构造 | ❌ 无 | — | 列表转惰性流 |
-| `io.streamLines` | 构造 | ❌ 无 | — | 惰性文件行流 |
-| `io.streamCommand` | 构造 | ❌ 无 | — | 惰性命令 stdout 流 |
-| `io.streamBytes` | 构造 | ❌ 无 | — | 惰性字节块流 |
+| `io.streamLines` | 构造 | ✅ 文件读 | — | 当前实现创建线程并打开文件；尚未 cold |
+| `io.streamCommand` | 构造 | ✅ 进程 | — | 当前实现创建线程并 spawn 进程；尚未 cold |
+| `io.streamBytes` | 构造 | ✅ 文件读 | — | 当前实现创建线程并打开文件；尚未 cold |
 | `io.streamMap` | 变换 | ❌ 无 | streamMap | 逐元素映射 ✅ |
 | `io.streamFilter` | 变换 | ❌ 无 | streamFilter | 惰性过滤 ✅ |
 | `io.streamTake` | 变换 | ❌ 无 | streamTake | 截断 ✅ |
@@ -180,7 +176,12 @@ pub fn is_effectful_builtin(name: &str) -> bool {
 | `io.streamWrite` | 消费 | ✅ | streamWrite | 写入文件 |
 | `io.streamForEach` | 消费 | ✅ | streamForEach | 逐元素消费 |
 | `io.streamFold` | 消费 | ✅ | streamFold | 严格折叠 |
-| `io.streamWithTimeout` | 包装 | ❌ 无 | — | 元素级超时 |
+| `io.streamWithTimeout` | 包装 | ✅ 时间 | — | 当前构造读取 `Instant`；尚未 cold |
+
+`crates/n3v3-common/src/action.rs` 按当前 runtime 行为将上述四个构造器标为
+effectful，避免纯函数绕过效果闸门。若要恢复 cold Stream 契约，必须把线程创建、
+文件打开、进程 spawn 和计时器读取移到显式 terminal/action host operation，
+并同步 registry、typeck、Lean 和 E2E。
 
 #### H. TTY 控制（有副作用：配置终端设备）
 
@@ -197,27 +198,23 @@ pub fn is_effectful_builtin(name: &str) -> bool {
 | `io.jobs` | 直接 | ✅ | `jobs` | 列出活跃 spawn ID |
 | `io.waitAnyJob` | 阻塞 | ✅ | `waitAnyJob` | 等待任意作业完成 |
 
-### 3.2 统计
+### 3.2 分类说明
 
-| 类别 | 数量 | 有效果？ |
-|------|------|---------|
-| 进程执行 | 6 | ✅ 全部 |
-| 文件 I/O | 5 | ✅ 全部 |
-| 任务/并发 | 7 | ✅ 全部 |
-| 输出函数 | 2 | ✅ 全部 |
-| Stream 消费 | 5 | ✅ 全部 |
-| TTY 控制 | 2 | ✅ 全部 |
-| Job 控制 | 2 | ✅ 全部 |
-| 纯构造函数 | 11 | ❌ 无 |
-| 纯检查器 | 4 | ❌ 无 |
-| Stream 构造/变换 | 9 | ❌ 无 |
-| **合计** | **34 个效果操作** + **24 个纯操作** | (Phase 4 complete, Phase 5 ongoing) |
+效果分类由 `n3v3_common::intrinsic_metadata` 维护，不能只按 builtin 名称或
+旧的分类表推断：
 
-> **注**: Stream 构造器 (4) 和变换器 (5) 是无副作用的纯操作；Stream 消费者 (5) 是有副作用的。
-> Stream 消费者的副作用是间接的——它们在求值流时触发构造阶段创建的惰性 I/O。
->
-> **io.cancel、io.awaitAny、io.setRawMode、io.resetTerminal、io.jobs、io.waitAnyJob 已实现 (Phase 4)**
-> **Registry CLI 命令 (registry-update/registry-serve/registry-publish) 已实现 (Phase 5)**
+- `streamList`、`streamMap`、`streamFilter`、`streamTake`、`streamDrop` 只构造
+  或变换内存描述，当前保持纯；
+- `streamLines`、`streamCommand`、`streamBytes`、`streamWithTimeout` 按当前
+  runtime 行为标为 effectful，因为构造阶段已经创建线程、打开文件、spawn
+  进程或读取计时器；
+- `isTTY`、`terminalSize`、`readKey`、`input`、`readPassword` 读取宿主设备或
+  输入，归入 `DEVICE`；`liveCurrent` 与 `liveCancel` 也不再伪装成纯操作；
+- 其他 Process、文件、Task、网络、输出和显式终端操作按 registry 中的
+  `EffectSummary` 分类；纯构造器和 ProcessResult 检查器仍可保持纯。
+
+当前 runtime 与 cold Stream/Action 边界尚未完全收敛；任何恢复纯构造或扩大
+执行范围的改动都必须同时更新 registry、typeck、evaluator、Lean、文档和行为测试。
 
 ---
 

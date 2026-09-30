@@ -53,6 +53,50 @@ fn test_frontend_driver_analyzes_multi_module_program() {
 }
 
 #[test]
+fn test_frontend_driver_hides_action_plans_when_any_module_has_errors() {
+    let temp_dir = TempDir::new().unwrap();
+    let root = temp_dir.path();
+
+    create_test_module(
+        root,
+        &["math"],
+        r#"
+            use std.io = io;
+            let content = io.readFile("config.n3v3");
+        "#,
+    );
+    create_test_module(
+        root,
+        &["main"],
+        r#"
+            use math (content);
+            let broken: Int = true;
+        "#,
+    );
+
+    let analysis = FrontendDriver::new(root)
+        .analyze_module_path(&["main".into()])
+        .unwrap();
+
+    assert!(
+        analysis
+            .diagnostic_modules_in_order()
+            .iter()
+            .flat_map(|module| module.diagnostics.iter())
+            .any(|diagnostic| diagnostic.severity == Severity::Error),
+        "expected a blocking diagnostic"
+    );
+    assert!(
+        analysis.load_order().iter().all(|module_id| analysis
+            .semantics(*module_id)
+            .unwrap()
+            .action_plans
+            .is_empty()),
+        "action plans must be hidden when any module has errors"
+    );
+}
+
+#[test]
 fn test_frontend_driver_resolves_trait_impls_across_modules() {
     let temp_dir = TempDir::new().unwrap();
     let root = temp_dir.path();

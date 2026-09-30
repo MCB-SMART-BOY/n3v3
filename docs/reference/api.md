@@ -58,7 +58,7 @@ isEvaluated(x: A) -> Bool
 
 
 ```n3v3
-list.empty -> List<A>
+[] -> List<A>                      -- 空列表字面量（`list.empty` 目前只有 `<builtin:list.empty>` 值，不可当列表用）
 list.singleton<A>(x: A) -> List<A>
 list.len<A>(xs: List<A>) -> Int
 list.isEmpty<A>(xs: List<A>) -> Bool
@@ -76,8 +76,8 @@ list.append<A>(xs: List<A>, ys: List<A>) -> List<A>
 list.reverse<A>(xs: List<A>) -> List<A>
 list.map<A, B>(f: A -> B, xs: List<A>) -> List<B>
 list.filter<A>(pred: A -> Bool, xs: List<A>) -> List<A>
-list.fold<A, B>(init: B, f: B -> A -> B, xs: List<A>) -> B
-list.foldRight<A, B>(init: B, f: A -> B -> B, xs: List<A>) -> B
+list.fold<A, B>(init: B, f: B -> A -> B, xs: List<A>) -> B   -- 运行时尚未支持：报 "list.fold requires runtime closure evaluation"
+list.foldRight<A, B>(init: B, f: A -> B -> B, xs: List<A>) -> B   -- 运行时尚未支持（同上）
 list.sum(xs: List<Int>) -> Int
 list.product(xs: List<Int>) -> Int
 list.sort<A>(xs: List<A>) -> List<A>
@@ -177,6 +177,11 @@ math.pi -> Float
 math.e -> Float
 math.inf -> Float
 math.nan -> Float
+math.abs(x: A) -> A
+math.clamp(x: A, lo: A, hi: A) -> A
+math.max(a: A, b: A) -> A
+math.min(a: A, b: A) -> A
+math.pow(base: Int, exp: Int) -> Int
 ```
 
 
@@ -252,7 +257,7 @@ io.poll(spawnId: Int) -> Option<ProcessResult>
 io.cancel(spawnId: Int) -> Unit
 io.awaitAny(tasks: List<Task[ProcessResult]>) -> ProcessResult
 io.awaitTaskWithTimeout(task: Task[ProcessResult], ms: Int) -> Option<ProcessResult>
-io.setRawMode(fd: Int) -> Unit
+io.setRawMode(fd: Int, enable: Bool) -> Unit
 io.resetTerminal(fd: Int) -> Unit
 
 -- Stream<T> APIs (13 APIs)
@@ -271,6 +276,55 @@ io.streamFold(s: Stream<T>, init: A, f: A -> T -> A) -> A
 io.streamWithTimeout(s: Stream<T>, ms: Int) -> Stream<Option<T>>
 
 -- Short I/O aliases (v4.0+): read, write, exec, cmd, run, sh, env, pwd, home, ok, stdout, stderr, code, ls, exists
+-- 别名同时提供限定形式 / the aliases also exist in qualified form
+io.read(path: String) -> String
+io.write(path: String, content: String) -> Unit
+io.run(cmd: Command) -> ProcessResult
+io.shell(command: String) -> ProcessResult
+io.env() -> Record
+
+io.args() -> (List<String>, Record)
+io.walk(path: Path) -> List<Path>
+io.chmod(path: Path, mode: Int) -> Unit
+io.chown(path: Path, uid: Int, gid: Int) -> Unit
+io.copy(from: String, to: String) -> Unit
+io.copyPath(from: Path, to: Path) -> Unit
+io.move(from: String, to: String) -> Unit
+io.movePath(from: Path, to: Path) -> Unit
+io.readlink(path: Path) -> Path
+io.symlink(target: Path, link: Path) -> Unit
+io.atomicWrite(path: String, content: String) -> Unit
+io.atomicWritePath(path: Path, content: String) -> Unit
+io.atomicWriteAll(files: List<{ path: String, content: String }>) -> Unit
+io.setEnv(name: String, value: String) -> Unit
+io.unsetEnv(name: String) -> Unit
+io.sleep(ms: Int) -> Unit
+io.which(program: String) -> Option<String>
+io.isTTY(fd: Int) -> Bool
+io.terminalSize() -> Option<{ rows: Int, cols: Int }>
+io.input(prompt: String) -> String
+io.readKey(fd: Int) -> Int
+io.readPassword(prompt: String) -> String
+io.lines(path: String) -> List<String>
+io.readFileLines(path: String, f: String -> Unit) -> Unit
+io.readFileLinesPath(path: Path, f: String -> Unit) -> Unit
+io.defer(cleanup: () -> Unit) -> Unit
+io.onSignal(signal: String, handler: () -> Unit) -> Unit
+io.jobs() -> List<{ id: Int, state: String }>
+io.waitAnyJob() -> { id: Int, result: ProcessResult }
+io.spawnWithTimeout(task: Task[ProcessResult], ms: Int) -> Int
+io.execCommandLines(cmd: Command) -> List<String>
+io.execCommandStreaming(cmd: Command, f: String -> Unit) -> ProcessResult
+io.execCommandStreamingWithTimeout(cmd: Command, f: String -> Unit, ms: Int) -> Option<ProcessResult>
+io.execPipelineStreaming(pipeline: Pipeline, f: String -> Unit) -> ProcessResult
+io.execPipelineStreamingWithTimeout(pipeline: Pipeline, f: String -> Unit, ms: Int) -> Option<ProcessResult>
+
+-- Glob 与事件/反应式
+io.glob(pattern: String) -> List<Path>
+io.every(ms: Int) -> Event<Int>
+io.watchFile(path: String) -> Event<String>
+io.eventNext(event: Event<A>) -> A
+io.liveNext(live: Live<A>) -> A
 ```
 
 ## Bytes Module (std.bytes)
@@ -325,7 +379,7 @@ path.is_absolute(path: String) -> Bool
 |----------|-----------|--------|
 | `io.reactive(event)` | `Event<a> -> Live<a>` | effect |
 | `io.liveNext(live)` | `Live<a> -> a` | effect |
-| `io.liveCurrent(live)` | `Live<a> -> Option<a>` | — |
+| `io.liveCurrent(live)` | `Live<a> -> Option<a>` | effect |
 | `io.liveCancel(live)` | `Live<a> -> ()` | effect |
 
 ## Temporal / 时序
@@ -353,6 +407,14 @@ Map.remove(key: K, map: Map<K, V>) -> Map<K, V>
 Map.union(left: Map<K, V>, right: Map<K, V>) -> Map<K, V>
 Map.intersection(left: Map<K, V>, right: Map<K, V>) -> Map<K, V>
 Map.difference(left: Map<K, V>, right: Map<K, V>) -> Map<K, V>
+Map.keys(map: Map<K, V>) -> List<String>
+Map.toList(map: Map<K, V>) -> List<(String, V)>
+
+-- 以下闭包成员已在 std 注册，但运行时返回
+-- "requires closure evaluation support"，当前不可用：
+-- Map.filter / Map.filterWithKey / Map.fold / Map.foldWithKey /
+-- Map.map / Map.mapWithKey / Map.update
+-- Set.filter / Set.fold / Set.map / Set.partition
 
 Set.empty -> Set<A>
 Set.singleton(value: A) -> Set<A>
@@ -369,6 +431,7 @@ Set.symmetricDifference(left: Set<A>, right: Set<A>) -> Set<A>
 Set.isSubset(left: Set<A>, right: Set<A>) -> Bool
 Set.isSuperset(left: Set<A>, right: Set<A>) -> Bool
 Set.isDisjoint(left: Set<A>, right: Set<A>) -> Bool
+Set.toList(set: Set<A>) -> List<A>
 ```
 
 
@@ -416,9 +479,7 @@ let users = [
     { name = "Bob", age = 25 },
 ];
 
-let names = users
-    |> filter(|u| u.age >= 18)
-    |> map(|u| u.name);
+let names = map(|u| u.name, filter(|u| u.age >= 18, users));
 
 let joined = string.join(names, ", ");
 
@@ -426,7 +487,6 @@ let joined = string.join(names, ", ");
 ```
 
 ---
-
 
 ```n3v3
 use std.list (filter, map);
@@ -437,9 +497,7 @@ let users = [
     { name = "小红", age = 25 },
 ];
 
-let names = users
-    |> filter(|u| u.age >= 18)
-    |> map(|u| u.name);
+let names = map(|u| u.name, filter(|u| u.age >= 18, users));
 
 let joined = string.join(names, "、");
 

@@ -100,6 +100,25 @@ fn builtin_fetch_result(span: Span) -> Ty {
         span,
     )
 }
+fn builtin_job(span: Span) -> Ty {
+    builtin_record(
+        vec![
+            ("id", builtin_ty(TyKind::Int, span)),
+            ("state", builtin_ty(TyKind::String, span)),
+        ],
+        span,
+    )
+}
+
+fn builtin_job_result(span: Span) -> Ty {
+    builtin_record(
+        vec![
+            ("id", builtin_ty(TyKind::Int, span)),
+            ("result", builtin_process_result(span)),
+        ],
+        span,
+    )
+}
 
 impl TypeChecker {
     pub(super) fn builtin_type(&mut self, name: &str, span: Span) -> Option<Ty> {
@@ -1266,6 +1285,18 @@ impl TypeChecker {
                     span,
                 )
             }
+            "io.liveCancel" => {
+                let a = builtin_param(0, "a", span);
+                builtin_forall(
+                    Vec::from(["a"]),
+                    builtin_fn(
+                        vec![builtin_live(a, span)],
+                        builtin_ty(TyKind::Unit, span),
+                        span,
+                    ),
+                    span,
+                )
+            }
             "io.eventFilter" => {
                 let a = builtin_param(0, "a", span);
                 builtin_forall(
@@ -1384,6 +1415,8 @@ impl TypeChecker {
                 builtin_ty(TyKind::Int, span),
                 span,
             ),
+            "io.jobs" => builtin_fn(Vec::new(), builtin_list(builtin_job(span), span), span),
+            "io.waitAnyJob" => builtin_fn(Vec::new(), builtin_job_result(span), span),
             "io.spawnWithTimeout" => builtin_fn(
                 vec![
                     builtin_task(builtin_process_result(span), span),

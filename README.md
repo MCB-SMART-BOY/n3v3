@@ -209,22 +209,28 @@ save(path: Path, data: String) = io.writeFilePath(path, data)
 
 ```bash
 n3v3 run foo.n3v3     # 执行脚本（支持 shebang）
-n3v3 repl             # 交互式 REPL（历史持久化、Tab 补全、:type、:save、:cd）
-n3v3 check foo.n3v3   # 类型检查
+n3v3 eval "1 + 2"     # 求值表达式
+n3v3 test ./tests     # 运行目录中的测试（发现 *_test.n3v3 与 test/*.n3v3）
+n3v3 check foo.n3v3   # 类型检查（默认检查 effect）
 n3v3 fmt file         # 代码格式化
-n3v3 doc spec         # 内置文档
+n3v3 repl             # 交互式 REPL（历史持久化、Tab 补全、:type、:save、:cd）
+n3v3 doc spec         # 内置文档（17 个主题）
+n3v3 explain E0200    # 错误码扩展说明
+n3v3 init ./proj      # 初始化项目
+n3v3 setup helix      # 生成编辑器集成
 n3v3 lsp              # Language Server
+n3v3 info             # 包与平台信息
+n3v3 version          # 版本信息
+
+# 以下命令标注 "Unix only"，仅 Unix 可用
 n3v3 search <query>   # 搜索包索引
-n3v3 package install <pkg>  # 安装包
-n3v3 package remove <pkg>   # 卸载包
-n3v3 package list     # 列出已安装包
 n3v3 build <pkg>      # 构建包
 n3v3 update           # 更新依赖
-n3v3 config build     # 构建系统配置
-n3v3 config switch    # 切换系统配置
-n3v3 store gc         # 垃圾回收
+n3v3 package install <pkg>   # 安装包（另有 package remove / list / rollback）
+n3v3 config build     # 构建系统配置（另有 config switch / switch-to / rollback / list / verify）
+n3v3 store gc         # 垃圾回收（另有 store info）
 n3v3 registry-update  # 更新 registry 索引
-n3v3 registry-serve   # 启动 registry 服务
+n3v3 registry-serve   # 启动本地 registry 服务
 n3v3 registry-publish # 发布包到 registry
 ```
 
@@ -238,9 +244,9 @@ n3v3 registry-publish # 发布包到 registry
 
 ---
 
-**Implemented: Shell 能力替代** ✅ — Stream<T> 13 APIs、E2E 554 测试、Formatter 幂等性 37/37、Clippy 0 warnings。
+**Implemented: Shell 能力替代** ✅ — Stream<T> 13 APIs、E2E 558 测试、Formatter 幂等性 37/37、Clippy 0 warnings。
 
-**Implemented: 生态补完** ✅ — flake/lock 系统、content-addressed store、registry CLI（17 个命令）、稳定性分级（Tier 1/2/3）。
+**Implemented: 生态补完** ✅ — flake/lock 系统、content-addressed store、registry CLI（`registry-update` / `registry-serve` / `registry-publish`）、稳定性分级（Tier 1/2/3）。
 
 示例脚本：`examples/test-runner.n3v3`（测试运行器）、`examples/ci-bootstrap.n3v3`（CI 启动脚本）、`examples/file-watcher.n3v3`（文件监控）、`examples/system-config.n3v3`（系统配置）。
 
@@ -254,4 +260,4 @@ MPL-2.0
 curl -fsSL https://raw.githubusercontent.com/MCB-SMART-BOY/n3v3/master/scripts/install.sh | sh
 ```
 
-Arch 用 `paru -S n3v3-bin`。源码编译：`cargo install --path n3v3-cli --locked`。
+Arch 用 AUR 的 `n3v3-bin`：`paru -S n3v3-bin`。源码编译：`cargo install --path n3v3-cli --locked`。

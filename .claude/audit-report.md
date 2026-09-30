@@ -432,7 +432,7 @@ builder、config、fetch、frontend、lsp、store、fmt 集成测试在 Windows 
 - `kill_process`：PID 复用窗口仍未消除。
 - `n3v3-typeck` trait 回退：多个候选 impl 时首个 HashMap 条目的选择仍不确定。
 - `tree-sitter-n3v3/grammar.js`：仍保留 v3.x 形态，尚未与 v4.0 语法完全收敛。
-- `io.readFileLines` 及其 Path 变体：typeck 保留两个 callback → `Unit` 声明（`crates/n3v3-typeck/src/check/builtin_type.rs:1040-1062`）。String 变体已有真实 E2E 覆盖（`tests/end_to_end.rs::test_end_to_end_io_read_file_lines_calls_callback`，源码行 `2526-2550`）；Path 变体保持 Planned / open，因为 std 侧明确返回 evaluator-owned 错误（`crates/n3v3-std/src/io/fs.rs:1221-1235`），typeck 重载尚未得到可用实现。判定：String 已覆盖，不能由 std stub 推断其不可用；Path 不可用。
+- `io.readFileLines` 及其 Path 变体：typeck 保留两个 callback → `Unit` 声明（`crates/n3v3-typeck/src/check/builtin_type.rs:1040-1062`）。String 与 Path 变体均有真实 E2E 覆盖（`tests/end_to_end.rs::test_end_to_end_io_read_file_lines_calls_callback`、`test_end_to_end_io_read_file_lines_path_reads_file` 及 missing-file error parity）；std 注册表保留 evaluator-owned Path stub，canonical HIR evaluator 负责实际 Path 读取。判定：两种变体均已实现；不要把 std stub 误判为不可用。
 - `io.streamLines` / `io.streamBytes`：typeck/docs 契约仍将输入声明为 `String`（`crates/n3v3-typeck/src/check/builtin_type.rs:1459-1472`）；runtime-only 路径在 `crates/n3v3-std/src/io/fs.rs:1577-1586,1706-1714` 额外接受 `Path` 值。判定：以 typeck 声明为准，这是保持 Planned / open 的接受态扩展，不引入未声明的类型联合。
 - `io.jobs` / `io.waitAnyJob`：runtime 已存在（`crates/n3v3-std/src/io/mod.rs:814-874`），文档和 E2E 也存在（`docs/reference/stability.md:215-216`；`tests/end_to_end.rs::test_jobs_returns_list`、`test_wait_any_job_returns_result`、`test_task_multiple_spawn_jobs_list`、`test_task_wait_any_job_with_spawn`）。但 `crates/n3v3-typeck/src/check/builtin_type.rs` 没有对应 typed declaration；同文件相邻的 `io.spawn` / `io.awaitAny` 声明（`builtin_type.rs:1389-1424`）说明这不是有意未声明。判定：漏声明而非有意未声明，Experimental until typed declaration is added。
 
@@ -507,11 +507,70 @@ builder、config、fetch、frontend、lsp、store、fmt 集成测试在 Windows 
 | `crates/n3v3-eval/src/diagnostics.rs` | 递归上限与栈预算以 `TypeError` → E0303 “runtime type error” + “加个类型标注”帮助呈现，且 >80 字符的消息被截断 | 建议为递归/栈耗尽增加独立 `EvalError` 变体与 `ErrorCode`（会新增第 56 个错误码，需同步 codes 表与文档）；本批次先把消息缩短到不被截断 |
 | `tree-sitter-n3v3/grammar.js` | 仍是 v3.x 形态（`if … then … else`、`lazy`、强制 `{ … }` 枚举、无后缀 `?`），而 `src/parser.c` 已随本批次重新生成 | 编辑器语法与编译器行为分歧；需按 v4.0 规范补规则并重新 generate |
 
+## AST/HIR/Action IR Review (2026-09-30)
+
+在前一轮 AST/HIR 缺陷修复的基础上，重新核对当前 v4/v5 canonical syntax
+与 `Parser → AST → HIR → Typeck → Eval` 边界，并单独检查 Action/Process/Stream
+是否已经形成独立 IR。
+
+结论：
+
+- AST 与 HIR 仍是当前唯一 canonical 表示；解析器支持的表达式、模式、类型、
+  顶层项在 `n3v3-syntax` 与 `n3v3-hir` 中有对应变体，unsupported 节点保留为
+  error 节点并由 frontend/typeck 报告，未发现新的静默 wildcard 降级。
+- 当前没有独立的 Action/Process/Job/Stream IR。`Command`、`Pipeline`、`Task`、
+  `Stream`、`Event` 和 `Live` 仍由 HIR builtin 调用与 evaluator runtime value
+  表示；因此不能把 HIR 误称为完整 Action IR。
+- 为收敛边界，新增了不改变默认求值语义的最小 shadow path：共享 intrinsic
+  metadata/`EffectSummary`、`HostOpKind`，以及 canonical HIR 上的
+  `ModuleSemantics.action_plans`。当前仅将字面量
+  `io.readFile("path")` 规划为 `HostOp::ReadFile`；动态路径不生成伪计划。
+  `check`、LSP、formatter 和分析路径只收集计划，不执行宿主操作。
+- `intrinsic_metadata` 的复核发现并修正了 stream 构造器、TTY 状态查询以及
+  `liveCurrent`/`liveCancel` 的纯效果漂移；当前 registry 不再让这些 runtime
+  宿主操作绕过 effect gate。Stream runtime 仍在构造阶段创建线程/打开文件/
+  spawn/读取计时器，因此 cold Stream 是明确的后续边界，而不是已完成事实。
+- `OsHost` 改为 root-scoped host：拒绝绝对路径、`..` 和越过 root 的 symlink；
+  `HostError` 使用转义路径显示并保留底层错误 source。
+- action plan 只在无阻断诊断的分析中发布；对于多模块/REPL snippet，
+  frontend 会在任一模块出现阻断诊断时从所有暴露的 `ModuleSemantics` 中清空
+  plans。它仍是 inspection-only side table，不是完整 host-op allowlist，也不覆盖
+  动态路径和运行时控制流。
+
+本轮实现证据：`cargo test -p n3v3-common --lib action::tests`、`cargo test
+--test action_plan`、`cargo test --test frontend -- --nocapture`、`cargo test
+--test frontend_driver -- --nocapture`、`cargo test --test frontend_session --
+--nocapture`。完整 workspace 与项目质量门需以本次交付前的实际运行结果为准。
+
+## Phase 3 ProcessPlan Adapter Slice
+
+本轮将 Process/Job 迁移推进到一个不改变语言公开契约的内部切片：
+
+- `n3v3-common::ProcessPlan`、`ProcessStage`、`ProcessRedirect` 和
+  `ProcessStream` 只保存拥有所有权的进程描述，不持有 `Child`、线程或其他
+  宿主资源，也不执行宿主操作。
+- `n3v3-std` 从现有 `CommandValue`/`PipelineValue` 做唯一 lowering，保留
+  stage 顺序、参数、cwd、stdin、环境和嵌入/边界 redirect；阻塞的
+  `io.execCommand`、`io.execPipeline`、普通 `Task` await 以及
+  `io.execCommandLines` 通过计划阶段执行。
+- 旧 `ProcessResult` 非零退出语义、redirect 拓扑校验、危险环境变量过滤、
+  stdin/output 限制和入口错误前缀未被改写。计划构造不读 stdin redirect、
+  不创建输出文件、不启动进程。
+- 本切片没有把计划加入 `Value`，没有切换 `Task` 为 `Job<T>` 或删除整数
+  spawn ID，也没有扩展 frontend `action_plans`、Action 语法、cold Stream、
+  evaluator-owned streaming、timeout、await-any、spawn 或 Event/Live。
+
+该切片是可回滚的执行层迁移，不代表独立 Action/Process/Job/Stream/Reactive
+IR 已完成。下一步仍需单独定义 typed Job 生命周期、可取消执行、timeout/
+spawn adapter、cold Stream 和 reactive 边界，再进行公开 API cutover。
+
 ---
+
+
 
 ## 最新验证状态 (v5.0.0)
 
-**Current status (2026-09-25):** The current product facts are v5.0.0, 556 E2E tests, 26 LSP methods, 55 diagnostic codes, 12 canonical keywords, 13 Stream<T> APIs, and 21 Lean modules; `scripts/counts.sh` is the source for these values. The v5.0.0 AST boundary cutover is implemented, comment trivia is retained by the parser/formatter, L1/L2 and the doc-test part of L9 are implemented, L15 is an explicit stub, and `io.tempDir` is implemented through evaluator-owned dispatch. Open follow-up boundaries are the undeclared MSRV, CI coverage/benchmark/fuzz gaps, JSON recursion depth, PID reuse during `kill_process`, nondeterministic trait fallback selection, the v3.x-shaped tree-sitter grammar, the `io.readFileLinesPath` Path variant (implemented by the evaluator, `crates/n3v3-eval/src/eval.rs` dispatch → `builtin_read_file_lines_path`; an earlier note here claimed the evaluator rejects it, which was false; both variants now have E2E coverage including the missing-file error path), the runtime-only Path acceptance for `io.streamLines` / `io.streamBytes`, and the missing typeck declarations for `io.jobs` / `io.waitAnyJob` (Experimental until typed declaration is added).
+**Current status (2026-09-30):** The current product facts are v5.0.0, 558 E2E tests, 26 LSP methods, 55 diagnostic codes, 12 canonical keywords, 13 Stream<T> APIs, and 21 Lean modules; `scripts/counts.sh` is the source for these values. The v5.0.0 AST boundary cutover is implemented, comment trivia is retained by the parser/formatter, L1/L2 and the doc-test part of L9 are implemented, L15 is an explicit stub, and `io.tempDir` is implemented through evaluator-owned dispatch. Open follow-up boundaries are the undeclared MSRV, CI coverage/benchmark/fuzz gaps, JSON recursion depth, PID reuse during `kill_process`, nondeterministic trait fallback selection, the v3.x-shaped tree-sitter grammar, the runtime-only Path acceptance for `io.streamLines` / `io.streamBytes`, missing typeck declarations for `io.jobs` / `io.waitAnyJob` (Experimental until typed declaration is added), and independent Process/Job/Stream IR beyond the current `io.readFile` action-plan shadow path.
 
 The release fixes documented above remain historical evidence. New changes MUST be validated against the current source and targeted behavior, not this ledger alone.
 

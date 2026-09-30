@@ -38,10 +38,23 @@ Every syntax has one meaning. No guessing.
 每种语法只有一个意思，不用猜。
 
 ```n3v3
-{ x = 1 }       -- ALWAYS a record (container delimited by { })
-{ x = 1; x }    -- ALWAYS a block
-|x| x + 1       -- ALWAYS a lambda
+{ x = 1 }        -- ALWAYS a record (container delimited by { })
 ```
+
+```n3v3
+{ x = 1; x }     -- ALWAYS a block
+```
+
+```n3v3
+|x| x + 1        -- ALWAYS a lambda
+```
+
+These are three alternative writings, each a complete item on its own: written
+on consecutive lines without separators they would parse as one application
+(`{ x = 1 }` applied to `{ x = 1; x }`), so keep them in separate items or
+separate them with `;`.
+三者是并列的写法，各自都是独立项：若不加分隔直接连写，它们会被解析为一次函数应用
+（`{ x = 1 }` 作用于 `{ x = 1; x }`），因此需要分项或使用 `;` 分隔。
 
 ### 2. Syntax Unity / 语法统一
 

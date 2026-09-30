@@ -74,19 +74,28 @@ The flake manifest declares inputs (dependencies) and outputs (packages, modules
 
 ```n3v3
 {
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    n3v3-std.url = "github:MCB-SMART-BOY/n3v3/v5.0.0";
-  };
-
-  outputs = { self, nixpkgs, n3v3-std }: {
-    packages.hello = n3v3-std.buildN3v3Package {
-      name = "hello";
-      src = ./src;
-    };
-  };
+    description = "Example project manifest",
+    inputs = {
+        nixpkgs = { url = "github:NixOS/nixpkgs/nixos-unstable" },
+        n3v3_std = { url = "github:MCB-SMART-BOY/n3v3/v5.0.0" },
+    },
+    outputs = fn(inputs) {
+        packages = {
+            hello = {
+                name = "hello",
+                src = "./src",
+                builder = inputs.n3v3_std.buildN3v3Package
+            }
+        }
+    },
 }
 ```
+
+Records are always `{ ... }` (the `#{ ... }` spelling is a legacy alias kept for
+compatibility), a lambda is written `fn(inputs) { ... }`, and manifests are plain
+values — the same shape as `examples/flake.n3v3`.
+记录统一写作 `{ ... }`（`#{ ... }` 是保留的旧写法），lambda 写作 `fn(inputs) { ... }`，
+清单本身是普通值，与 `examples/flake.n3v3` 同形。
 
 ### 2.2 `flake.lock`: Dependency Lockfile
 

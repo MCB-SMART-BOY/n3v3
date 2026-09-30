@@ -394,6 +394,25 @@ pub(super) fn specs() -> Vec<CompletionSpec> {
             "io.awaitTaskWithTimeout(${1:task}, ${2:timeout_ms})",
             "Option<ProcessResult>",
         ),
+        // === Reactive APIs ===
+        (
+            "io.liveNext",
+            "Get the next reactive value",
+            "io.liveNext(${1:live})",
+            "T",
+        ),
+        (
+            "io.liveCurrent",
+            "Read the current reactive value",
+            "io.liveCurrent(${1:live})",
+            "Option<T>",
+        ),
+        (
+            "io.liveCancel",
+            "Stop a reactive value",
+            "io.liveCancel(${1:live})",
+            "Unit",
+        ),
         // === TTY / terminal APIs ===
         (
             "io.isTTY",
@@ -430,13 +449,13 @@ pub(super) fn specs() -> Vec<CompletionSpec> {
             "io.jobs",
             "List running background jobs",
             "io.jobs()",
-            "List<Job>",
+            "List<{id: Int, state: String}>",
         ),
         (
             "io.waitAnyJob",
             "Wait for any background job",
             "io.waitAnyJob()",
-            "ProcessResult",
+            "{id: Int, result: ProcessResult}",
         ),
         // === Other I/O ===
         (

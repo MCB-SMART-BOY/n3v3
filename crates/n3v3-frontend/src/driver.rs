@@ -508,7 +508,7 @@ impl FrontendDriver {
             )
             .with_effectful_definitions(global_effectful_definitions.iter().copied());
             checker.check(module);
-            let semantics = collect_module_semantics(&checker);
+            let semantics = collect_module_semantics(&checker, module);
             global_effectful_definitions.extend(checker.effectful_definitions().iter().copied());
             let diagnostics =
                 rewrite_diagnostics_with_names(checker.diagnostics_ref().to_vec(), &type_names);
@@ -520,6 +520,15 @@ impl FrontendDriver {
                     semantics,
                 },
             );
+        }
+
+        let has_blocking_diagnostics = modules
+            .values()
+            .any(|module| diagnostics_have_errors(&module.diagnostics));
+        if has_blocking_diagnostics {
+            for module in modules.values_mut() {
+                module.semantics.action_plans.clear();
+            }
         }
 
         Ok(ProgramAnalysis {

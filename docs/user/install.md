@@ -88,7 +88,8 @@ Expand-Archive n3v3.zip -DestinationPath $env:LOCALAPPDATA\n3v3\bin -Force
 ### Arch Linux / Arch Linux 用户
 
 ```bash
-yay -S n3v3
+# AUR package: n3v3-bin
+yay -S n3v3-bin
 ```
 
 ### Build from Source / 从源码编译

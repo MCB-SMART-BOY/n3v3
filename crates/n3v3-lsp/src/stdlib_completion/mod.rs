@@ -110,6 +110,10 @@ mod tests {
         assert!(labels.contains(&"io.cancel"));
         assert!(labels.contains(&"io.awaitAny"));
         assert!(labels.contains(&"io.awaitTaskWithTimeout"));
+        // Reactive APIs
+        assert!(labels.contains(&"io.liveNext"));
+        assert!(labels.contains(&"io.liveCurrent"));
+        assert!(labels.contains(&"io.liveCancel"));
         // TTY APIs
         assert!(labels.contains(&"io.isTTY"));
         assert!(labels.contains(&"io.terminalSize"));
