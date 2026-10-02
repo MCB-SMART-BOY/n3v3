@@ -6,12 +6,13 @@ use crate::platform::{PlatformCapabilities, warn_system_config_unavailable};
 use n3v3_config::{
     activate::Activator,
     generate::{GeneratedConfig, GeneratedFile, Generator},
-    generation::{Generation, GenerationManager, GenerationMetadata},
+    generation::{Generation, GenerationManager, GenerationMetadata, PublicationError},
     module::Module,
 };
 use n3v3_derive::Hash;
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Snapshot manifest file name under a generation directory.
@@ -86,12 +87,169 @@ fn generations_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/var/lib/n3v3"))
 }
 
-/// Get the build output directory.
-/// 获取构建输出目录。
-fn build_dir() -> PathBuf {
-    std::env::var("N3V3_BUILD_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("n3v3-build"))
+/// Hold uniquely created staging until the generation snapshot is complete.
+struct BuildStaging {
+    path: PathBuf,
+    should_clean: bool,
+}
+
+impl Drop for BuildStaging {
+    fn drop(&mut self) {
+        if self.should_clean {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+fn build_staging() -> Result<BuildStaging, String> {
+    if let Some(explicit) = std::env::var_os("N3V3_BUILD_DIR") {
+        let path = PathBuf::from(explicit);
+        let path = check_private_staging(&path)?;
+        return Ok(BuildStaging {
+            path,
+            should_clean: false,
+        });
+    }
+    create_default_staging(&std::env::temp_dir())
+}
+
+fn create_default_staging(temp_root: &Path) -> Result<BuildStaging, String> {
+    let parent = check_staging_parent(temp_root)?;
+    use std::ffi::{CString, OsString};
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let template = parent.join("n3v3-build-XXXXXX");
+    let mut bytes = CString::new(template.as_os_str().as_bytes())
+        .map_err(|error| {
+            format!(
+                "Invalid build staging path '{}': {}",
+                template.display(),
+                error
+            )
+        })?
+        .into_bytes_with_nul();
+    if unsafe { libc::mkdtemp(bytes.as_mut_ptr().cast()) }.is_null() {
+        return Err(format!(
+            "Failed to create private staging directory: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let path = PathBuf::from(OsString::from_vec(bytes[..bytes.len() - 1].to_vec()));
+    Ok(BuildStaging {
+        path,
+        should_clean: true,
+    })
+}
+
+fn check_staging_parent(path: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::MetadataExt;
+    let canonical = fs::canonicalize(path).map_err(|error| {
+        format!(
+            "Failed to resolve staging directory '{}': {}",
+            path.display(),
+            error
+        )
+    })?;
+    let mut current = PathBuf::new();
+    for component in canonical.components() {
+        current.push(component);
+        let metadata = fs::symlink_metadata(&current).map_err(|error| {
+            format!(
+                "Failed to inspect staging parent '{}': {}",
+                current.display(),
+                error
+            )
+        })?;
+        let is_sticky_root_parent = metadata.uid() == 0 && metadata.mode() & 0o1000 != 0;
+        if !metadata.is_dir()
+            || metadata.file_type().is_symlink()
+            || (metadata.uid() != unsafe { libc::geteuid() } && metadata.uid() != 0)
+            || (metadata.mode() & 0o022 != 0 && !is_sticky_root_parent)
+        {
+            return Err(format!(
+                "Unsafe staging parent '{}': must be owned and not group/world writable",
+                current.display()
+            ));
+        }
+    }
+    Ok(canonical)
+}
+
+fn check_private_staging(path: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| {
+                format!(
+                    "Failed to resolve N3V3_BUILD_DIR '{}': {}",
+                    path.display(),
+                    error
+                )
+            })?
+            .join(path)
+    };
+    let mut current = PathBuf::new();
+    for component in absolute.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err(format!(
+                "Unsafe N3V3_BUILD_DIR '{}': parent traversal",
+                path.display()
+            ));
+        }
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "Unsafe N3V3_BUILD_DIR '{}': contains symlinks",
+                    path.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(format!(
+                    "Failed to inspect N3V3_BUILD_DIR '{}': {}",
+                    current.display(),
+                    error
+                ));
+            }
+        }
+    }
+    if !absolute.exists() {
+        let parent = absolute
+            .parent()
+            .ok_or_else(|| format!("N3V3_BUILD_DIR '{}' has no parent", path.display()))?;
+        let trusted_parent = check_staging_parent(parent)?;
+        let name = absolute
+            .file_name()
+            .ok_or_else(|| format!("N3V3_BUILD_DIR '{}' has no directory name", path.display()))?;
+        let new_path = trusted_parent.join(name);
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&new_path)
+            .map_err(|error| {
+                format!(
+                    "Failed to create N3V3_BUILD_DIR '{}': {}",
+                    new_path.display(),
+                    error
+                )
+            })?;
+        return Ok(new_path);
+    }
+    let metadata = fs::symlink_metadata(&absolute)
+        .map_err(|error| format!("Unsafe N3V3_BUILD_DIR '{}': {}", path.display(), error))?;
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err(format!(
+            "Unsafe N3V3_BUILD_DIR '{}': must be an owned private directory without symlinks",
+            path.display()
+        ));
+    }
+    check_staging_parent(&absolute)
 }
 
 /// Get activation root for `n3v3 config switch`.
@@ -150,18 +308,17 @@ pub fn build() -> Result<(), String> {
             .map_err(|e| format!("Failed to build default configuration: {}", e))?
     };
 
-    // Create a new generation
-    // 创建新的代
     let gen_manager = GenerationManager::new(generations_dir())
         .map_err(|e| format!("Failed to initialize generation manager: {}", e))?;
-    system_config.generation = gen_manager
+    let expected_generation = gen_manager
         .next_generation()
         .map_err(|e| format!("Failed to determine next generation number: {}", e))?;
+    system_config.generation = expected_generation;
 
     // Generate configuration files
     // 生成配置文件
-    let output_dir = build_dir();
-    let generator = Generator::new(output_dir.clone());
+    let staging = build_staging()?;
+    let generator = Generator::new(staging.path.clone());
     let generated = generator
         .generate(&system_config)
         .map_err(|e| format!("Failed to generate configuration: {}", e))?;
@@ -171,22 +328,19 @@ pub fn build() -> Result<(), String> {
         generated.files.len()
     ));
 
-    // Create store path from derivation
-    // 从派生创建存储路径
     let drv = generator.to_derivation(&system_config);
-    let store_path = drv.drv_path();
-
     let metadata = GenerationMetadata::new()
         .name(&system_config.name)
         .description("Built by n3v3 config build");
-
-    let generation = gen_manager
-        .create_generation(&store_path, metadata)
-        .map_err(|e| format!("Failed to create generation: {}", e))?;
+    let generation = prepare_and_publish_generation(
+        &gen_manager,
+        expected_generation,
+        &drv.drv_path(),
+        metadata,
+        &generated,
+    )?;
 
     system_config.generation = generation.number;
-    save_generated_snapshot(&generated, &generation.path)?;
-
     output::success(&format!("Created generation {}.", generation.number));
     output::success("Configuration built successfully.");
     println!();
@@ -194,6 +348,110 @@ pub fn build() -> Result<(), String> {
     println!("  n3v3 config switch");
 
     Ok(())
+}
+
+/// Finish a generation snapshot before publishing its current pointer.
+/// 在发布 current 指针前完成 generation 快照。
+fn prepare_and_publish_generation(
+    manager: &GenerationManager,
+    expected_number: u64,
+    store_path: &n3v3_derive::StorePath,
+    metadata: GenerationMetadata,
+    generated: &GeneratedConfig,
+) -> Result<Generation, String> {
+    let generation = manager
+        .create_generation_unpublished(store_path, metadata)
+        .map_err(|error| format!("Failed to create unpublished generation: {}", error))?;
+    if generation.number != expected_number {
+        return Err(clean_incomplete_generation(
+            manager,
+            &generation,
+            format!(
+                "Generation allocation changed from {} to {}; retry the build",
+                expected_number, generation.number
+            ),
+        ));
+    }
+
+    if let Err(error) = save_generated_snapshot(generated, &generation.path)
+        .and_then(|_| verify_generation_snapshot(&generation))
+    {
+        return Err(clean_incomplete_generation(manager, &generation, error));
+    }
+    if let Err(error) = manager.publish_generation(&generation) {
+        let cause = format!(
+            "Failed to publish generation {}: {}",
+            generation.number, error
+        );
+        return match error {
+            PublicationError::NotCommitted(_) => {
+                Err(clean_incomplete_generation(manager, &generation, cause))
+            }
+            PublicationError::Committed {
+                restoration: Some(_),
+                ..
+            } => Err(format!(
+                "{}; retained generation {} because pointer restoration failed",
+                cause, generation.number
+            )),
+            PublicationError::Committed {
+                restoration: None, ..
+            } => match manager.current_generation() {
+                Ok(Some(current)) if current == generation.number => Err(format!(
+                    "{}; retained referenced generation {}",
+                    cause, generation.number
+                )),
+                Ok(_) => Err(clean_incomplete_generation(manager, &generation, cause)),
+                Err(check_error) => Err(format!(
+                    "{}; retained generation because current pointer could not be checked: {}",
+                    cause, check_error
+                )),
+            },
+        };
+    }
+    manager
+        .mark_latest_built_generation(generation.number)
+        .map_err(|error| {
+            format!(
+                "Generation {} was published but failed to record latest build: {}",
+                generation.number, error
+            )
+        })?;
+    Ok(generation)
+}
+
+/// Remove only the unpublished directory allocated by this build attempt.
+/// 仅删除本次构建分配的未发布目录。
+fn clean_incomplete_generation(
+    manager: &GenerationManager,
+    generation: &Generation,
+    cause: String,
+) -> String {
+    match manager.current_generation() {
+        Ok(Some(number)) if number == generation.number => {
+            return format!(
+                "{}; retained generation {} because current points to it",
+                cause, generation.number
+            );
+        }
+        Err(error) => {
+            return format!(
+                "{}; retained generation {} because current could not be checked: {}",
+                cause, generation.number, error
+            );
+        }
+        _ => {}
+    }
+    match fs::remove_dir_all(&generation.path) {
+        Ok(()) => cause,
+        Err(error) => format!(
+            "{}; failed to clean incomplete generation {} at '{}': {}",
+            cause,
+            generation.number,
+            generation.path.display(),
+            error
+        ),
+    }
 }
 
 /// Convert an absolute path into a path string relative to `base`.
@@ -284,70 +542,126 @@ fn save_generated_snapshot(
     generated: &GeneratedConfig,
     generation_dir: &Path,
 ) -> Result<(), String> {
-    let artifacts_dir = generation_dir.join(GENERATED_ARTIFACTS_DIR);
-    fs::create_dir_all(&artifacts_dir)
-        .map_err(|e| format!("Failed to create generation artifact dir: {}", e))?;
+    if generated.activation_script.is_some() {
+        return Err(
+            "Activation scripts are not supported in durable configuration snapshots".to_string(),
+        );
+    }
 
+    let artifacts_dir = generation_dir.join(GENERATED_ARTIFACTS_DIR);
+    use std::os::unix::fs::DirBuilderExt;
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&artifacts_dir)
+        .map_err(|error| {
+            format!(
+                "Failed to create generation artifact dir '{}': {}",
+                artifacts_dir.display(),
+                error
+            )
+        })?;
     let mut snapshot = GeneratedConfigSnapshot {
-        files: Vec::new(),
+        files: Vec::with_capacity(generated.files.len()),
         services: generated.services.clone(),
         activation_script: None,
         activation_script_hash: None,
     };
 
     for (index, file) in generated.files.iter().enumerate() {
-        let name = file
-            .source
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("file");
-        let artifact_name = format!("{:04}-{}", index, normalize_artifact_name(name));
-        let artifact_path = artifacts_dir.join(artifact_name);
-        fs::copy(&file.source, &artifact_path).map_err(|e| {
-            format!(
-                "Failed to copy generated file '{}' into generation snapshot: {}",
-                file.source.display(),
-                e
-            )
-        })?;
-
-        snapshot.files.push(GeneratedFileSnapshot {
-            source: rel_path_string(generation_dir, &artifact_path)?,
-            target: file.target.to_string_lossy().to_string(),
-            mode: file.mode,
-            hash: Some(hash_file_hex(&artifact_path)?),
-        });
+        snapshot.files.push(copy_snapshot_file(
+            file,
+            index,
+            generation_dir,
+            &artifacts_dir,
+        )?);
     }
+    sync_directory(&artifacts_dir)?;
+    write_snapshot_manifest(generation_dir, &snapshot)?;
+    sync_directory(generation_dir)?;
+    Ok(())
+}
 
-    if let Some(script) = &generated.activation_script {
-        let script_artifact = artifacts_dir.join("activate");
-        fs::copy(script, &script_artifact).map_err(|e| {
-            format!(
-                "Failed to copy activation script '{}' into generation snapshot: {}",
-                script.display(),
-                e
-            )
-        })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(script)
-                .map_err(|e| format!("Failed to read activation script metadata: {}", e))?
-                .permissions()
-                .mode();
-            fs::set_permissions(&script_artifact, fs::Permissions::from_mode(mode))
-                .map_err(|e| format!("Failed to set activation script permissions: {}", e))?;
-        }
-        snapshot.activation_script = Some(rel_path_string(generation_dir, &script_artifact)?);
-        snapshot.activation_script_hash = Some(hash_file_hex(&script_artifact)?);
-    }
+/// Copy one generated file without overwriting an existing artifact.
+/// 复制一个生成文件，且不覆盖已有产物。
+fn copy_snapshot_file(
+    file: &GeneratedFile,
+    index: usize,
+    generation_dir: &Path,
+    artifacts_dir: &Path,
+) -> Result<GeneratedFileSnapshot, String> {
+    let name = file
+        .source
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("file");
+    let artifact_name = format!("{:04}-{}", index, normalize_artifact_name(name));
+    let artifact_path = artifacts_dir.join(artifact_name);
+    let mut source = File::open(&file.source)
+        .map_err(|error| format!("Failed to read '{}': {}", file.source.display(), error))?;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut artifact = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&artifact_path)
+        .map_err(|error| format!("Failed to create '{}': {}", artifact_path.display(), error))?;
+    std::io::copy(&mut source, &mut artifact)
+        .map_err(|error| format!("Failed to copy '{}': {}", file.source.display(), error))?;
+    artifact
+        .sync_all()
+        .map_err(|error| format!("Failed to sync '{}': {}", artifact_path.display(), error))?;
 
+    Ok(GeneratedFileSnapshot {
+        source: rel_path_string(generation_dir, &artifact_path)?,
+        target: file.target.to_string_lossy().to_string(),
+        mode: file.mode,
+        hash: Some(hash_file_hex(&artifact_path)?),
+    })
+}
+
+/// Durably install the snapshot manifest after all artifacts are durable.
+/// 在所有产物持久化后原子写入快照清单。
+fn write_snapshot_manifest(
+    generation_dir: &Path,
+    snapshot: &GeneratedConfigSnapshot,
+) -> Result<(), String> {
     let snapshot_path = generation_dir.join(GENERATED_SNAPSHOT_FILE);
-    let content = serde_json::to_string_pretty(&snapshot)
-        .map_err(|e| format!("Failed to serialize generation snapshot: {}", e))?;
-    fs::write(&snapshot_path, content)
-        .map_err(|e| format!("Failed to write generation snapshot: {}", e))?;
+    if snapshot_path.exists() {
+        return Err(format!(
+            "Generation snapshot already exists: {}",
+            snapshot_path.display()
+        ));
+    }
+    let temp_path = generation_dir.join(".generated-config.json.tmp");
+    let content = serde_json::to_vec_pretty(snapshot)
+        .map_err(|error| format!("Failed to serialize generation snapshot: {}", error))?;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut temp = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temp_path)
+        .map_err(|error| {
+            format!(
+                "Failed to create snapshot manifest '{}': {}",
+                temp_path.display(),
+                error
+            )
+        })?;
+    temp.write_all(&content)
+        .and_then(|_| temp.sync_all())
+        .map_err(|error| format!("Failed to persist snapshot manifest: {}", error))?;
+    fs::rename(&temp_path, &snapshot_path)
+        .map_err(|error| format!("Failed to publish snapshot manifest: {}", error))
+}
 
+/// Sync a directory on platforms that support directory fsync.
+/// 在支持目录 fsync 的平台持久化目录项。
+fn sync_directory(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("Failed to sync directory '{}': {}", path.display(), error))?;
     Ok(())
 }
 
@@ -363,6 +677,12 @@ fn load_generated_snapshot(generation_dir: &Path) -> Result<Option<GeneratedConf
         .map_err(|e| format!("Failed to read generation snapshot: {}", e))?;
     let snapshot: GeneratedConfigSnapshot = serde_json::from_str(&content)
         .map_err(|e| format!("Invalid generation snapshot JSON: {}", e))?;
+    if snapshot.activation_script.is_some() || snapshot.activation_script_hash.is_some() {
+        return Err(
+            "Legacy activation-script snapshots are unsafe and cannot be activated; rebuild the configuration"
+                .to_string(),
+        );
+    }
 
     let mut generated = GeneratedConfig::new();
     generated.services = snapshot.services;
@@ -393,34 +713,12 @@ fn load_generated_snapshot(generation_dir: &Path) -> Result<Option<GeneratedConf
         });
     }
 
-    if let Some(script_rel) = snapshot.activation_script {
-        let script = resolve_snapshot_artifact_path(generation_dir, &script_rel)?;
-        if !script.exists() {
-            return Err(format!(
-                "Missing activation script artifact '{}' referenced by snapshot",
-                script.display()
-            ));
-        }
-        if let Some(expected_hash) = snapshot.activation_script_hash {
-            let actual_hash = hash_file_hex(&script)?;
-            if actual_hash != expected_hash {
-                return Err(format!(
-                    "Hash mismatch for activation script artifact '{}': expected {}, got {}",
-                    script.display(),
-                    expected_hash,
-                    actual_hash
-                ));
-            }
-        }
-        generated.activation_script = Some(script);
-    }
-
     Ok(Some(generated))
 }
 
 /// Activate a specific generation.
 /// 激活指定 generation。
-fn activate_generation(generation: &Generation) -> Result<(), String> {
+fn activate_generation(generation: &Generation, is_dry_run: bool) -> Result<(), String> {
     output::info(&format!(
         "Activating generation {} ({})...",
         generation.number,
@@ -435,16 +733,26 @@ fn activate_generation(generation: &Generation) -> Result<(), String> {
     })?;
 
     let root = activation_root();
-    let dry_run = activation_dry_run();
-    if dry_run {
+    if is_dry_run {
         output::warning("Dry-run activation enabled via N3V3_CONFIG_DRY_RUN.");
     }
 
-    let activator = Activator::new().root(&root).dry_run(dry_run).verbose(true);
+    let activator = Activator::new()
+        .root(&root)
+        .dry_run(is_dry_run)
+        .verbose(true);
     let result = activator
         .activate(&generated)
         .map_err(|e| format!("Failed to activate generation {}: {}", generation.number, e))?;
 
+    if is_dry_run {
+        output::info(&format!("Previewed generation {}.", generation.number));
+        output::info(&format!(
+            "Would install {} file(s), enable {} service(s).",
+            result.files_installed, result.services_enabled
+        ));
+        return Ok(());
+    }
     output::success(&format!("Activated generation {}.", generation.number));
     output::info(&format!(
         "Installed {} file(s), enabled {} service(s).",
@@ -484,39 +792,58 @@ where
 {
     let previous_current = gen_manager
         .current_generation()
-        .map_err(|e| format!("Failed to get current generation: {}", e))?;
-
+        .map_err(|error| format!("Failed to get current generation: {}", error))?;
+    let previous_active = gen_manager
+        .active_generation()
+        .map_err(|error| format!("Failed to get active generation: {}", error))?;
     let generation = gen_manager
         .switch_to(gen_num)
-        .map_err(|e| format!("Failed to switch to generation {}: {}", gen_num, e))?;
-
-    if let Err(err) = activate(&generation) {
-        if let Some(prev) = previous_current {
-            if prev == gen_num {
-                return Err(format!(
-                    "Activation failed for generation {}: {}",
-                    gen_num, err
-                ));
-            }
-            let restore = gen_manager.switch_to(prev);
-            return match restore {
-                Ok(_) => Err(format!(
-                    "Switched generation pointer to {} but activation failed: {}. Restored current generation pointer to {}.",
-                    gen_num, err, prev
-                )),
-                Err(restore_err) => Err(format!(
-                    "Switched generation pointer to {} but activation failed: {}. Failed to restore current generation pointer: {}",
-                    gen_num, err, restore_err
-                )),
-            };
-        }
-
-        return Err(format!(
-            "Switched generation pointer to {} but activation failed: {}. No previous current generation to restore.",
-            gen_num, err
-        ));
+        .map_err(|error| format!("Failed to switch to generation {}: {}", gen_num, error))?;
+    if let Err(error) = activate(&generation) {
+        let previous = previous_active.or(previous_current);
+        let restore = match previous {
+            Some(number) if number != gen_num => gen_manager.switch_to(number).map(|_| ()),
+            None => gen_manager.clear_current(),
+            _ => Ok(()),
+        };
+        return match restore {
+            Ok(()) => Err(format!(
+                "Activation failed for generation {}: {}. Restored previous current generation pointer {:?}.",
+                gen_num, error, previous
+            )),
+            Err(restore_error) => Err(format!(
+                "Activation failed for generation {}: {}. Failed to restore current generation pointer: {}",
+                gen_num, error, restore_error
+            )),
+        };
     }
+    gen_manager
+        .mark_active_generation(gen_num)
+        .map_err(|error| {
+            format!(
+                "Generation {} activated, but failed to record active pointer: {}",
+                gen_num, error
+            )
+        })?;
+    Ok(generation)
+}
 
+fn run_selected_generation<F>(
+    gen_manager: &GenerationManager,
+    gen_num: u64,
+    is_dry_run: bool,
+    mut activate: F,
+) -> Result<Generation, String>
+where
+    F: FnMut(&Generation) -> Result<(), String>,
+{
+    if !is_dry_run {
+        return switch_to_generation_with_activation(gen_manager, gen_num, activate);
+    }
+    let generation = gen_manager
+        .load_generation(gen_num)
+        .map_err(|error| format!("Failed to preview generation {gen_num}: {error}"))?;
+    activate(&generation)?;
     Ok(generation)
 }
 
@@ -535,15 +862,19 @@ pub fn switch() -> Result<(), String> {
         .map_err(|e| format!("Failed to initialize generation manager: {}", e))?;
 
     let current = gen_manager
-        .current_generation()
-        .map_err(|e| format!("Failed to get current generation: {}", e))?;
+        .latest_built_generation()
+        .map_err(|error| format!("Failed to get latest built generation: {}", error))?
+        .or(gen_manager
+            .current_generation()
+            .map_err(|error| format!("Failed to get current generation: {}", error))?);
 
     match current {
         Some(gen_num) => {
-            let generation = gen_manager
-                .load_generation(gen_num)
-                .map_err(|e| format!("Failed to load generation: {}", e))?;
-            activate_generation(&generation)
+            let is_dry_run = activation_dry_run();
+            run_selected_generation(&gen_manager, gen_num, is_dry_run, |generation| {
+                activate_generation(generation, is_dry_run)
+            })?;
+            Ok(())
         }
         None => {
             Err("No configuration has been built yet. Run 'n3v3 config build' first.".to_string())
@@ -613,6 +944,21 @@ pub fn verify(generation: Option<u64>, all: bool) -> Result<(), String> {
     }
 }
 
+fn previous_retained_generation(
+    gen_manager: &GenerationManager,
+    current: u64,
+) -> Result<Generation, String> {
+    let previous = gen_manager
+        .list_generations()
+        .map_err(|error| format!("Failed to list generations for rollback: {error}"))?
+        .into_iter()
+        .filter(|generation| generation.number < current)
+        .max_by_key(|generation| generation.number)
+        .ok_or_else(|| format!("No retained generation before {current} to roll back to."))?;
+    verify_generation_snapshot(&previous)?;
+    Ok(previous)
+}
+
 /// Rollback to a previous configuration.
 /// 回滚到上一个配置。
 pub fn rollback() -> Result<(), String> {
@@ -628,42 +974,33 @@ pub fn rollback() -> Result<(), String> {
         .map_err(|e| format!("Failed to initialize generation manager: {}", e))?;
 
     let current = gen_manager
-        .current_generation()
-        .map_err(|e| format!("Failed to get current generation: {}", e))?;
+        .active_generation()
+        .map_err(|error| format!("Failed to get active generation: {}", error))?
+        .or(gen_manager
+            .current_generation()
+            .map_err(|error| format!("Failed to get current generation: {}", error))?);
 
-    match current {
-        Some(gen_num) if gen_num > 1 => {
-            let prev_gen = gen_num - 1;
-            println!(
-                "Rolling back from generation {} to {}...",
-                gen_num, prev_gen
-            );
-
-            let generation = gen_manager
-                .switch_to(prev_gen)
-                .map_err(|e| format!("Failed to switch to generation {}: {}", prev_gen, e))?;
-
-            if let Err(err) = activate_generation(&generation) {
-                let restore = gen_manager.switch_to(gen_num);
-                return match restore {
-                    Ok(_) => Err(format!(
-                        "Rolled back generation pointer to {} but activation failed: {}. Restored current generation pointer to {}.",
-                        prev_gen, err, gen_num
-                    )),
-                    Err(restore_err) => Err(format!(
-                        "Rolled back generation pointer to {} but activation failed: {}. Failed to restore current generation pointer: {}",
-                        prev_gen, err, restore_err
-                    )),
-                };
-            }
-
-            output::success(&format!("Rolled back to generation {}.", generation.number));
-
-            Ok(())
-        }
-        Some(_) => Err("Already at generation 1, cannot rollback further.".to_string()),
-        None => Err("No configuration has been built yet.".to_string()),
+    let current = current.ok_or_else(|| "No configuration has been built yet.".to_string())?;
+    let previous = previous_retained_generation(&gen_manager, current)?;
+    let is_dry_run = activation_dry_run();
+    output::info(&format!(
+        "{} generation {} from {}...",
+        if is_dry_run {
+            "Previewing rollback to"
+        } else {
+            "Rolling back to"
+        },
+        previous.number,
+        current
+    ));
+    let generation =
+        run_selected_generation(&gen_manager, previous.number, is_dry_run, |generation| {
+            activate_generation(generation, is_dry_run)
+        })?;
+    if !is_dry_run {
+        output::success(&format!("Rolled back to generation {}.", generation.number));
     }
+    Ok(())
 }
 
 /// List all configuration generations.
@@ -674,7 +1011,10 @@ pub fn list_generations() -> Result<(), String> {
 
     let current = gen_manager
         .current_generation()
-        .map_err(|e| format!("Failed to get current generation: {}", e))?;
+        .map_err(|error| format!("Failed to get current generation: {}", error))?;
+    let active = gen_manager
+        .active_generation()
+        .map_err(|error| format!("Failed to get active generation: {}", error))?;
 
     let generations = gen_manager
         .list_generations()
@@ -691,10 +1031,14 @@ pub fn list_generations() -> Result<(), String> {
     let mut table = output::Table::new(vec!["#", "Name", "Description", "Status"]);
 
     for generation in generations.iter().rev() {
-        let status = if Some(generation.number) == current {
-            "current"
-        } else {
-            ""
+        let status = match (
+            Some(generation.number) == current,
+            Some(generation.number) == active,
+        ) {
+            (true, true) => "current, active",
+            (true, false) => "current",
+            (false, true) => "active",
+            (false, false) => "",
         };
         let name = generation.metadata.name.as_deref().unwrap_or("unnamed");
         let desc = generation.metadata.description.as_deref().unwrap_or("");
@@ -742,9 +1086,14 @@ pub fn switch_interactive() -> Result<(), String> {
             .parse()
             .map_err(|_| format!("Invalid generation number: {}", input))?;
 
+        let is_dry_run = activation_dry_run();
         let generation =
-            switch_to_generation_with_activation(&gen_manager, gen_num, activate_generation)?;
-        output::success(&format!("Switched to generation {}.", generation.number));
+            run_selected_generation(&gen_manager, gen_num, is_dry_run, |generation| {
+                activate_generation(generation, is_dry_run)
+            })?;
+        if !is_dry_run {
+            output::success(&format!("Switched to generation {}.", generation.number));
+        }
     } else {
         output::info("Switch cancelled.");
     }
@@ -808,14 +1157,6 @@ mod tests {
 
         let source = dir.join("source.conf");
         fs::write(&source, "content\n").unwrap();
-        let script = dir.join("activate.sh");
-        fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
         let mut generated = GeneratedConfig::new();
         generated.files.push(GeneratedFile {
             source,
@@ -823,7 +1164,6 @@ mod tests {
             mode: 0o644,
         });
         generated.services.push("demo".to_string());
-        generated.activation_script = Some(script);
 
         save_generated_snapshot(&generated, &gen_dir).unwrap();
         let loaded = load_generated_snapshot(&gen_dir).unwrap().unwrap();
@@ -833,13 +1173,7 @@ mod tests {
         assert_eq!(loaded.files[0].mode, 0o644);
         assert!(loaded.files[0].source.exists());
         assert_eq!(loaded.services, vec!["demo".to_string()]);
-        assert!(
-            loaded
-                .activation_script
-                .as_ref()
-                .expect("activation script present")
-                .exists()
-        );
+        assert!(loaded.activation_script.is_none());
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -935,8 +1269,8 @@ mod tests {
     }
 
     #[test]
-    fn test_load_snapshot_rejects_absolute_activation_script_path() {
-        let dir = temp_dir("snapshot-absolute-script");
+    fn load_snapshot_legacy_activation_script_is_rejected() {
+        let dir = temp_dir("snapshot-legacy-script");
         let gen_dir = dir.join("generation-1");
         fs::create_dir_all(&gen_dir).unwrap();
 
@@ -952,9 +1286,23 @@ mod tests {
         .unwrap();
 
         let err = load_generated_snapshot(&gen_dir).unwrap_err();
-        assert!(err.contains("Invalid snapshot artifact path"));
+        assert!(err.contains("Legacy activation-script snapshots"));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_snapshot_with_activation_script_rejects_before_writing() {
+        let dir = temp_dir("snapshot-script-input");
+        let gen_dir = dir.join("generation-1");
+        fs::create_dir(&gen_dir).unwrap();
+        let mut generated = GeneratedConfig::new();
+        generated.activation_script = Some(dir.join("untrusted-script"));
+
+        let error = save_generated_snapshot(&generated, &gen_dir).unwrap_err();
+        assert!(error.contains("Activation scripts are not supported"));
+        assert!(!gen_dir.join(GENERATED_SNAPSHOT_FILE).exists());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -978,7 +1326,7 @@ mod tests {
         fs::create_dir_all(&gen_dir).unwrap();
 
         let generation = dummy_generation(gen_dir.clone(), 1);
-        let err = activate_generation(&generation).expect_err("activation should fail");
+        let err = activate_generation(&generation, false).expect_err("activation should fail");
         assert!(err.contains("missing 'generated-config.json'"));
 
         let _ = fs::remove_dir_all(&dir);
@@ -1028,9 +1376,296 @@ mod tests {
         })
         .expect_err("switch should fail");
 
-        assert!(err.contains("Restored current generation pointer to 2"));
+        assert!(err.contains("Restored previous current generation pointer Some(2)"));
         assert_eq!(manager.current_generation().unwrap(), Some(2));
 
         let _ = fs::remove_dir_all(&state_dir);
+    }
+
+    #[test]
+    fn preview_generation_keeps_current_and_active_pointers() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = GenerationManager::new(root.path().to_path_buf()).unwrap();
+        let store = StorePath::new(DeriveHash::of(b"config"), "config".to_string());
+        let generated = GeneratedConfig::new();
+        prepare_and_publish_generation(&manager, 1, &store, GenerationMetadata::new(), &generated)
+            .unwrap();
+        switch_to_generation_with_activation(&manager, 1, |_| Ok(())).unwrap();
+        prepare_and_publish_generation(&manager, 2, &store, GenerationMetadata::new(), &generated)
+            .unwrap();
+        let mut called = false;
+        run_selected_generation(&manager, 2, true, |_| {
+            called = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(called);
+        assert_eq!(manager.current_generation().unwrap(), Some(2));
+        assert_eq!(manager.active_generation().unwrap(), Some(1));
+        run_selected_generation(&manager, 1, true, |_| Ok(())).unwrap();
+        assert_eq!(manager.current_generation().unwrap(), Some(2));
+        assert_eq!(manager.active_generation().unwrap(), Some(1));
+    }
+
+    #[test]
+    fn prepare_generation_failed_snapshot_preserves_prior_snapshot_and_pointer() {
+        let state_dir = temp_dir("failed-build");
+        let manager = GenerationManager::new(state_dir.clone()).unwrap();
+        let store = StorePath::new(DeriveHash::of(b"gen1"), "gen1".to_string());
+        let source = state_dir.join("source.conf");
+        fs::write(&source, "original\n").unwrap();
+        let mut generated = GeneratedConfig::new();
+        generated.files.push(GeneratedFile {
+            source: source.clone(),
+            target: PathBuf::from("/etc/test.conf"),
+            mode: 0o644,
+        });
+        let first = prepare_and_publish_generation(
+            &manager,
+            1,
+            &store,
+            GenerationMetadata::new(),
+            &generated,
+        )
+        .unwrap();
+        let first_snapshot = fs::read(first.path.join(GENERATED_SNAPSHOT_FILE)).unwrap();
+        generated.files[0].source = state_dir.join("missing.conf");
+
+        let failure = prepare_and_publish_generation(
+            &manager,
+            2,
+            &store,
+            GenerationMetadata::new(),
+            &generated,
+        )
+        .unwrap_err();
+        assert!(failure.contains("Failed to read"));
+        assert_eq!(manager.current_generation().unwrap(), Some(1));
+        assert_eq!(
+            fs::read(first.path.join(GENERATED_SNAPSHOT_FILE)).unwrap(),
+            first_snapshot
+        );
+        assert!(!state_dir.join("generations/generation-2").exists());
+
+        generated.files[0].source = source;
+        let second = prepare_and_publish_generation(
+            &manager,
+            2,
+            &store,
+            GenerationMetadata::new(),
+            &generated,
+        )
+        .unwrap();
+        assert_eq!(second.number, 2);
+        assert_eq!(manager.current_generation().unwrap(), Some(2));
+        let _ = fs::remove_dir_all(state_dir);
+    }
+
+    #[test]
+    fn prepare_generation_after_rollback_does_not_overwrite_retained_snapshot() {
+        let state_dir = temp_dir("build-after-rollback");
+        let manager = GenerationManager::new(state_dir.clone()).unwrap();
+        let store = StorePath::new(DeriveHash::of(b"config"), "config".to_string());
+        let generated = GeneratedConfig::new();
+        let first = prepare_and_publish_generation(
+            &manager,
+            1,
+            &store,
+            GenerationMetadata::new(),
+            &generated,
+        )
+        .unwrap();
+        let second = prepare_and_publish_generation(
+            &manager,
+            2,
+            &store,
+            GenerationMetadata::new(),
+            &generated,
+        )
+        .unwrap();
+        let second_snapshot = fs::read(second.path.join(GENERATED_SNAPSHOT_FILE)).unwrap();
+        manager.switch_to(first.number).unwrap();
+
+        let third = prepare_and_publish_generation(
+            &manager,
+            3,
+            &store,
+            GenerationMetadata::new(),
+            &generated,
+        )
+        .unwrap();
+        assert_eq!(third.number, 3);
+        assert_eq!(manager.current_generation().unwrap(), Some(3));
+        assert_eq!(
+            fs::read(second.path.join(GENERATED_SNAPSHOT_FILE)).unwrap(),
+            second_snapshot
+        );
+        let _ = fs::remove_dir_all(state_dir);
+    }
+
+    #[test]
+    fn switch_activation_failure_without_previous_pointer_restores_none() {
+        let state_dir = temp_dir("switch-no-previous");
+        let manager = GenerationManager::new(state_dir.clone()).unwrap();
+        let store = StorePath::new(DeriveHash::of(b"config"), "config".to_string());
+        manager
+            .create_generation_unpublished(&store, GenerationMetadata::new())
+            .unwrap();
+        let error = switch_to_generation_with_activation(&manager, 1, |_| {
+            Err("simulated activation failure".to_string())
+        })
+        .unwrap_err();
+        assert!(error.contains("Restored previous current generation pointer None"));
+        assert_eq!(manager.current_generation().unwrap(), None);
+        let _ = fs::remove_dir_all(state_dir);
+    }
+    #[test]
+    fn build_staging_shared_or_symlink_directory_is_rejected() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = tempfile::tempdir().unwrap();
+        let shared = root.path().join("shared");
+        fs::create_dir(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(
+            check_private_staging(&shared)
+                .unwrap_err()
+                .contains("Unsafe")
+        );
+        let alias = root.path().join("alias");
+        symlink(&shared, &alias).unwrap();
+        assert!(
+            check_private_staging(&alias)
+                .unwrap_err()
+                .contains("symlinks")
+        );
+    }
+
+    #[test]
+    fn build_staging_custom_missing_directory_is_created_privately() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let custom = root.path().join("custom-build");
+        let canonical = check_private_staging(&custom).unwrap();
+        assert_eq!(canonical, custom);
+        assert_eq!(
+            fs::metadata(custom).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
+    fn build_staging_default_is_private_unique_and_removed_on_drop() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let first = create_default_staging(root.path()).unwrap();
+        let second = create_default_staging(root.path()).unwrap();
+        assert_ne!(first.path, second.path);
+        assert_eq!(
+            fs::metadata(&first.path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let path = first.path.clone();
+        drop(first);
+        assert!(!path.exists());
+        assert!(second.path.exists());
+    }
+
+    #[test]
+    fn snapshot_artifacts_are_private_at_creation() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let generation = root.path().join("generation-1");
+        fs::create_dir(&generation).unwrap();
+        let source = root.path().join("shadow");
+        fs::write(&source, "alice:hash\n").unwrap();
+        let mut generated = GeneratedConfig::new();
+        generated.files.push(GeneratedFile {
+            source,
+            target: PathBuf::from("/etc/shadow"),
+            mode: 0o640,
+        });
+        save_generated_snapshot(&generated, &generation).unwrap();
+        let artifacts = generation.join(GENERATED_ARTIFACTS_DIR);
+        let artifact = fs::read_dir(&artifacts)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        for path in [artifact, generation.join(GENERATED_SNAPSHOT_FILE)] {
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert_eq!(
+            fs::metadata(artifacts).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
+    fn rollback_with_missing_intermediate_generation_selects_retained_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = GenerationManager::new(root.path().to_path_buf()).unwrap();
+        let store = StorePath::new(DeriveHash::of(b"config"), "config".to_string());
+        let generated = GeneratedConfig::new();
+        for number in 1..=3 {
+            prepare_and_publish_generation(
+                &manager,
+                number,
+                &store,
+                GenerationMetadata::new(),
+                &generated,
+            )
+            .unwrap();
+        }
+        std::fs::remove_dir_all(root.path().join("generations/generation-2")).unwrap();
+
+        assert_eq!(previous_retained_generation(&manager, 3).unwrap().number, 1);
+        assert!(previous_retained_generation(&manager, 1).is_err());
+    }
+
+    #[test]
+    fn build_failed_activation_restores_active_and_preserves_latest_build() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = GenerationManager::new(root.path().to_path_buf()).unwrap();
+        let store = StorePath::new(DeriveHash::of(b"config"), "config".to_string());
+        let generated = GeneratedConfig::new();
+        prepare_and_publish_generation(&manager, 1, &store, GenerationMetadata::new(), &generated)
+            .unwrap();
+        switch_to_generation_with_activation(&manager, 1, |_| Ok(())).unwrap();
+        prepare_and_publish_generation(&manager, 2, &store, GenerationMetadata::new(), &generated)
+            .unwrap();
+        let latest = manager.latest_built_generation().unwrap().unwrap();
+        assert_eq!(latest, 2);
+        switch_to_generation_with_activation(&manager, latest, |_| Err("activation failed".into()))
+            .unwrap_err();
+        assert_eq!(manager.current_generation().unwrap(), Some(1));
+        assert_eq!(manager.active_generation().unwrap(), Some(1));
+        assert_eq!(manager.latest_built_generation().unwrap(), Some(2));
+        assert!(manager.load_generation(2).is_ok());
+    }
+
+    #[test]
+    fn incomplete_cleanup_does_not_remove_current_generation() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = GenerationManager::new(root.path().to_path_buf()).unwrap();
+        let store = StorePath::new(DeriveHash::of(b"config"), "config".to_string());
+        let generated = GeneratedConfig::new();
+        let generation = prepare_and_publish_generation(
+            &manager,
+            1,
+            &store,
+            GenerationMetadata::new(),
+            &generated,
+        )
+        .unwrap();
+        assert!(
+            clean_incomplete_generation(&manager, &generation, "failure".into())
+                .contains("retained")
+        );
+        assert!(generation.path.exists());
+        assert_eq!(manager.current_generation().unwrap(), Some(1));
     }
 }

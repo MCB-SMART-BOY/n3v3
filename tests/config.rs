@@ -303,7 +303,7 @@ fn temp_dir(suffix: &str) -> PathBuf {
 }
 
 #[test]
-fn test_generator() {
+fn generator_regular_config_uses_structured_activation_data() {
     let dir = temp_dir("gen");
 
     let config = SystemConfig::new("test")
@@ -315,7 +315,7 @@ fn test_generator() {
     let generated = generator.generate(&config).unwrap();
 
     assert!(!generated.files.is_empty());
-    assert!(generated.activation_script.is_some());
+    assert!(generated.activation_script.is_none());
     assert_eq!(generated.services, vec!["sshd"]);
 
     // Cleanup
@@ -324,16 +324,54 @@ fn test_generator() {
 
 #[test]
 fn test_generator_uses_user_password_hash_in_shadow() {
-    let dir = temp_dir("gen-shadow-hash");
-
+    let dir = tempfile::tempdir().unwrap();
     let config = SystemConfig::new("test").user(UserConfig::new("alice").password_hash("$6$abc"));
-    let generator = Generator::new(dir.clone());
+    let generator = Generator::new(dir.path().join("output"));
     let _generated = generator.generate(&config).unwrap();
+    let shadow = dir.path().join("output/etc/shadow");
+    assert!(
+        fs::read_to_string(&shadow)
+            .unwrap()
+            .contains("alice:$6$abc:19000:0:99999:7:::")
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(shadow).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(dir.path().join("output/etc"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+}
 
-    let shadow = fs::read_to_string(dir.join("etc/shadow")).unwrap();
-    assert!(shadow.contains("alice:$6$abc:19000:0:99999:7:::"));
+#[test]
+fn generator_invalid_service_name_rejects_before_creating_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("output");
+    let error = Generator::new(output.clone())
+        .generate(&SystemConfig::new("test").service("../escape"))
+        .unwrap_err();
+    assert!(error.to_string().contains("invalid service name"));
+    assert!(!output.exists());
+}
 
-    let _ = fs::remove_dir_all(&dir);
+#[test]
+fn generator_invalid_user_name_rejects_before_creating_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("output");
+    let error = Generator::new(output.clone())
+        .generate(&SystemConfig::new("test").user(UserConfig::new("nested/user")))
+        .unwrap_err();
+    assert!(error.to_string().contains("invalid user name"));
+    assert!(!output.exists());
 }
 
 #[test]

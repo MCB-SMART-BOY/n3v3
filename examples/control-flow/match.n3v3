@@ -39,4 +39,4 @@ score = |grade| {
   }
 }
 
-println(score("A"));
+println(score("A"))

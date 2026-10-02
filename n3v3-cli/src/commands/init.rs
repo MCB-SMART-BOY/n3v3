@@ -1,18 +1,74 @@
 //! Initialize a new n3v3 project.
 //! 初始化新的 n3v3 项目。
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::Path;
 
-pub fn run(dir: &str) -> Result<(), String> {
-    let dir = Path::new(dir);
-    fs::create_dir_all(dir).map_err(|e| format!("mkdir: {e}"))?;
+const PROJECT_FILES: [&str; 3] = ["flake.n3v3", "main.n3v3", ".gitignore"];
 
-    // flake.n3v3
-    let flake = format!(
+fn reject_existing_path(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(format!("project output already exists: {}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("failed to inspect {}: {error}", path.display())),
+    }
+}
+
+fn write_new_file(path: &Path, content: &str) -> Result<(), String> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("failed to create {}: {error}", path.display()))?;
+    if let Err(error) = file.write_all(content.as_bytes()) {
+        let cleanup = fs::remove_file(path)
+            .err()
+            .map(|cleanup| format!("; failed to remove partial file: {cleanup}"))
+            .unwrap_or_default();
+        return Err(format!(
+            "failed to write {}: {error}{cleanup}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn write_project_files(dir: &Path, files: &[(&str, &str)]) -> Result<(), String> {
+    let mut created = Vec::with_capacity(files.len());
+    for (name, content) in files {
+        let path = dir.join(name);
+        if let Err(error) = write_new_file(&path, content) {
+            let cleanup_errors = created
+                .iter()
+                .filter_map(|created_path| fs::remove_file(created_path).err())
+                .map(|cleanup| cleanup.to_string())
+                .collect::<Vec<_>>();
+            if cleanup_errors.is_empty() {
+                return Err(error);
+            }
+            return Err(format!(
+                "{error}; failed to roll back project files: {}",
+                cleanup_errors.join("; ")
+            ));
+        }
+        created.push(path);
+    }
+    Ok(())
+}
+
+fn project_name(dir: &Path) -> String {
+    dir.file_name()
+        .unwrap_or("my-project".as_ref())
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn render_flake(name: &str) -> String {
+    format!(
         r#"{{
     description = "An n3v3 project",
-    name = "{}",
+    name = "{name}",
     version = "0.1.0",
 
     inputs = {{}},
@@ -24,16 +80,12 @@ pub fn run(dir: &str) -> Result<(), String> {
         }};
         {{ packages = pkgs, checks = checks }}
     }},
-}}"#,
-        dir.file_name()
-            .unwrap_or("my-project".as_ref())
-            .to_string_lossy()
-    );
+}}"#
+    )
+}
 
-    fs::write(dir.join("flake.n3v3"), flake).map_err(|e| format!("write flake.n3v3: {e}"))?;
-
-    // main.n3v3
-    let main = format!(
+fn render_main(name: &str) -> String {
+    format!(
         r#"#!/usr/bin/env n3v3 run
 -- {name} — main entry point
 use std.io = io;
@@ -44,18 +96,40 @@ let name = match args {{
     [] -> "World"
 }};
 io.println("Hello, " ++ name ++ "!");
-"#,
-        name = dir
-            .file_name()
-            .unwrap_or("my-project".as_ref())
-            .to_string_lossy()
+"#
+    )
+}
+
+pub fn run(dir: &str) -> Result<(), String> {
+    let dir = Path::new(dir);
+    if fs::symlink_metadata(dir).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(format!("project directory is a symlink: {}", dir.display()));
+    }
+    for file in PROJECT_FILES {
+        reject_existing_path(&dir.join(file))?;
+    }
+
+    let did_create_dir = !dir.exists();
+    fs::create_dir_all(dir).map_err(|error| format!("mkdir {}: {error}", dir.display()))?;
+    let name = project_name(dir);
+    let flake = render_flake(&name);
+    let main = render_main(&name);
+    let result = write_project_files(
+        dir,
+        &[
+            ("flake.n3v3", &flake),
+            ("main.n3v3", &main),
+            (".gitignore", "result\n.direnv\n"),
+        ],
     );
-
-    fs::write(dir.join("main.n3v3"), main).map_err(|e| format!("write main.n3v3: {e}"))?;
-
-    // .gitignore
-    fs::write(dir.join(".gitignore"), "result\n.direnv\n")
-        .map_err(|e| format!("write .gitignore: {e}"))?;
+    if let Err(error) = result {
+        if did_create_dir && let Err(cleanup) = fs::remove_dir(dir) {
+            return Err(format!(
+                "{error}; failed to remove partial project directory: {cleanup}"
+            ));
+        }
+        return Err(error);
+    }
 
     println!("✅ Created n3v3 project in {}", dir.display());
     println!("   cd {} && n3v3 run main.n3v3", dir.display());
@@ -91,6 +165,77 @@ mod tests {
             "generated source should type-check: {:?}",
             analysis.diagnostics
         );
+    }
+
+    #[test]
+    fn run_existing_output_rejects_without_partial_project() {
+        for existing in ["main.n3v3", ".gitignore", "flake.n3v3"] {
+            let dir = tempfile::tempdir().expect("temporary directory");
+            let path = dir.path().join(existing);
+            std::fs::write(&path, "user content").expect("seed collision");
+            let result = run(dir.path().to_str().expect("UTF-8 temporary path"));
+            assert!(result.is_err(), "existing {existing} should reject init");
+            assert_eq!(std::fs::read_to_string(path).unwrap(), "user content");
+            for other in super::PROJECT_FILES {
+                if other != existing {
+                    assert!(
+                        !dir.path().join(other).exists(),
+                        "{other} created after collision"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn write_project_files_late_collision_rolls_back_created_files() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        std::fs::write(dir.path().join("main.n3v3"), "raced content").unwrap();
+        let result = super::write_project_files(
+            dir.path(),
+            &[("flake.n3v3", "flake"), ("main.n3v3", "main")],
+        );
+        assert!(result.is_err());
+        assert!(!dir.path().join("flake.n3v3").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("main.n3v3")).unwrap(),
+            "raced content"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_symlink_output_rejects_without_partial_project() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let destination = dir.path().join("user-data");
+        std::fs::write(&destination, "user content").unwrap();
+        symlink(&destination, dir.path().join(".gitignore")).unwrap();
+        let result = run(dir.path().to_str().expect("UTF-8 temporary path"));
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(destination).unwrap(),
+            "user content"
+        );
+        assert!(!dir.path().join("flake.n3v3").exists());
+        assert!(!dir.path().join("main.n3v3").exists());
+
+        let alias = dir.path().join("alias");
+        symlink(dir.path(), &alias).unwrap();
+        assert!(run(alias.to_str().unwrap()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_dangling_symlink_output_rejects_without_creating_files() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        symlink(dir.path().join("missing"), dir.path().join("main.n3v3")).unwrap();
+        assert!(run(dir.path().to_str().unwrap()).is_err());
+        assert!(!dir.path().join("flake.n3v3").exists());
+        assert!(!dir.path().join(".gitignore").exists());
     }
 
     #[cfg(unix)]

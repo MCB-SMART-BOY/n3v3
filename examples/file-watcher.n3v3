@@ -1,21 +1,23 @@
 #!/usr/bin/env n3v3
--- File watcher: polls a directory and reports changes
--- 文件监控器：轮询目录并报告变化
-use std.io = io;
+-- One-shot file scan: reports the current file count
+-- 单次文件扫描：报告当前文件数量
+use std.io = io
 
-let dir = match io.args() {
-    (args, _) -> match args {
-        [d, ..] -> d,
-        [] -> "."
-    }
-};
+dir = match io.args() {
+  (args, _) -> match args {
+    [d, ..] -> d,
+    [] -> ".",
+  },
+}
 
-io.println("Watching " + dir + " for changes...");
-io.println("Press Ctrl+C to stop.");
+io.println("Scanning " + dir + "...");
 
--- Poll once to verify the concept and report file count
+-- Scan once and report file count; this example does not watch continuously.
 -- Note: io.glob returns a List of Path values in the current directory
-let files = io.glob(dir + "/*");
-let count = len(files);
+files = io.glob(dir + "/*")
+
+count = len(files)
+
 io.println("[" + toString(count) + "] files at now");
+
 0

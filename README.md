@@ -50,7 +50,7 @@ config = { port = Some(8080) }
 port = config.port ?? 8080
 
 ready = io.pathExistsPath(./health-check)
-io.retry(fn() { ready }, 3, 2000);
+assert(ready);
 ```
 
 类型系统在编译期告诉你 `config.port` 对不对、`??` 的默认值类型匹不匹配。不需要等到半夜告警响了才发现变量名拼错了。
@@ -153,13 +153,14 @@ registerSignals() = {
 }
 ```
 
-**重试和条件等待**：
+**重试和条件等待**。当前回调是纯函数；需要重新读取文件、网络或进程状态时，
+不要把一次 I/O 结果捕获成固定布尔值：
 
 ```n3v3-check
 use std.io = io
-ready = io.pathExistsPath(./health-check);
-io.retry(fn() { ready }, 5, 1000);
-io.ensure(fn() { ready }, 30000, 500);
+attempts = 0
+io.retry(fn() { attempts = attempts + 1; attempts >= 3 }, 5, 1000);
+io.ensure(fn() { attempts >= 3 }, 30000, 500);
 ```
 
 **二进制数据**。`Bytes` 是一等类型：
@@ -228,10 +229,10 @@ n3v3 build <pkg>      # 构建包
 n3v3 update           # 更新依赖
 n3v3 package install <pkg>   # 安装包（另有 package remove / list / rollback）
 n3v3 config build     # 构建系统配置（另有 config switch / switch-to / rollback / list / verify）
-n3v3 store gc         # 垃圾回收（另有 store info）
+n3v3 store gc         # 垃圾回收（另有 store info；保留 profile generations 及 references）
 n3v3 registry-update  # 更新 registry 索引
-n3v3 registry-serve   # 启动本地 registry 服务
-n3v3 registry-publish # 发布包到 registry
+n3v3 registry-serve   # 仅 loopback；启动须设 N3V3_REGISTRY_TOKEN，发布写入需 Bearer 令牌
+n3v3 registry-publish # 发布包需相同令牌；公开服务仍须 TLS/认证网关
 ```
 
 ---
@@ -248,7 +249,7 @@ n3v3 registry-publish # 发布包到 registry
 
 **Implemented: 生态补完** ✅ — flake/lock 系统、content-addressed store、registry CLI（`registry-update` / `registry-serve` / `registry-publish`）、稳定性分级（Tier 1/2/3）。
 
-示例脚本：`examples/test-runner.n3v3`（测试运行器）、`examples/ci-bootstrap.n3v3`（CI 启动脚本）、`examples/file-watcher.n3v3`（文件监控）、`examples/system-config.n3v3`（系统配置）。
+示例脚本：`examples/test-runner.n3v3`（测试文件发现演示）、`examples/ci-bootstrap.n3v3`（CI 启动脚本）、`examples/file-watcher.n3v3`（单次文件扫描演示）、`examples/system-config.n3v3`（系统配置）。
 
 ---
 

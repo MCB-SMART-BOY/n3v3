@@ -620,5 +620,28 @@ The release fixes documented above remain historical evidence. New changes MUST 
 
 | 问题 | 事实 | 影响 | 建议 |
 |---|---|---|---|
-| 格式化器丢弃 shebang | `n3v3-parser/src/lib.rs:39-41` 在解析前剥离 `#!`，AST 不携带该信息 | `n3v3 fmt file --write` 会移除可执行脚本的 shebang；`examples/` 中 6 个文件带 shebang | 需在解析结果/AST 上记录 shebang（公共 AST 变更，需评审）；本轮只记录限制 |
 | lambda 体的裸记录与块歧义 | lambda 参数后的 `{` 一律按块解析（`parse_lambda_body`）；`\|x\| { a = 1, b = 2 }` 报 E0101，`\|x\| ({ ... })` 与 `\|x\| #{ ... }` 可解析 | 打印器已按括号形式输出；但语言层面“记录体 lambda 不能写裸 `{...}`”未被规范明确 | 若要支持裸记录体，需语法/解析器/规范/tree-sitter/Lean 同步变更；属语言决策 |
+
+2026-10-03 后续状态：formatter 在 CLI 边界分离并保留 shebang，`--write`
+使用同目录临时文件原子替换并恢复 permission bits；25 个示例已全部 canonical。
+
+---
+
+## Product Hardening Review (2026-10-03)
+
+本轮按用户可感知旅程核对并收敛配置、存储、包管理、CLI、registry 与形式化差分
+边界；未把 Action/Job/Stream IR 的后续迁移误报为已完成。
+
+| 边界 | 已实现契约 | 主要证据 |
+|---|---|---|
+| 配置 build/switch/rollback | generation 在发布 `current` 前保存并校验不可变 artifact/hash snapshot；激活限制在显式 root，拒绝 activation script，部分失败回滚文件系统并恢复旧 pointer | `n3v3-cli/src/commands/config.rs`、`crates/n3v3-config/src/activate.rs`、`tests/config.rs` |
+| NAR 与 binary cache | 解包拒绝 traversal/symlink/重复条目/异常 mode/truncated/trailing data；下载与发布前校验 URL/path、压缩大小、NAR 大小及 hash | `crates/n3v3-store/src/nar.rs`、`cache.rs` |
+| package profile 与 GC | install/remove/rollback 创建完整 generation 后原子替换 `current`；manifest 与 bin link 逐项验证；GC 保留全部 profile generations 并递归跟随 references，损坏 root fail-closed | `n3v3-cli/src/commands/install.rs`、`remove.rs`、`crates/n3v3-store/src/gc.rs` |
+| CLI 与示例 | `init` 使用 create-new 并清理半成品；formatter 保留 shebang/mode；25 个示例全部 canonical；失败的示例子进程不再被当作成功 | `init.rs`、`fmt.rs`、`.claude/hooks/fmt-all.sh`、`examples/` |
+| Registry | 内建服务没有认证，CLI 因此只接受 loopback bind；公开部署必须在产品外层提供认证与传输安全 | `registry_serve.rs`、`main.rs`、README |
+| Rust ↔ Lean | 固定种子 suite 同时运行 Rust CLI 与 Lean evaluator，任一进程失败或结果不一致即失败；旧的 Rust 自比较脚本已删除 | `n3v3-cli/examples/gen_diff_test.rs`、`formal/n3v3/Tests/Eval.lean`、`.github/workflows/ci.yml` |
+
+保留风险：内建 registry 仍不具备公开服务所需认证；tree-sitter 仍是 v3.x grammar；
+Action/Job/Stream 独立 IR、code coverage、benchmark、fuzz、MSRV、JSON 深度和 PID
+reuse 仍是后续工作。当前结果必须以本轮行为证明、`scripts/validate.sh --ci` 和
+全局 validator 的实际结果为准。

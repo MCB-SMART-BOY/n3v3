@@ -7,9 +7,12 @@
 use crate::ConfigError;
 use crate::generate::GeneratedConfig;
 use std::collections::HashSet;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+const MAX_TEMP_FILE_ATTEMPTS: usize = 100;
 
 /// Configuration activator.
 /// 配置激活器。
@@ -57,15 +60,15 @@ impl Activator {
     /// Activate a configuration.
     /// 激活配置。
     pub fn activate(&self, generated: &GeneratedConfig) -> Result<ActivationResult, ConfigError> {
+        reject_activation_script(generated)?;
+        let root = checked_root(&self.root)?;
         let mut result = ActivationResult::new();
-        let mut tx = ActivationTransaction::new();
+        let mut tx = ActivationTransaction::new(root.clone());
 
         let apply_result = (|| -> Result<(), ConfigError> {
-            // Copy files
-            // 复制文件
             for file in &generated.files {
-                let target = resolve_target_under_root(&self.root, &file.target)?;
-
+                let target = resolve_target_under_root(&root, &file.target)?;
+                check_parent(&root, &target, false, &mut Vec::new())?;
                 if self.verbose {
                     println!(
                         "Installing {} -> {}",
@@ -79,28 +82,6 @@ impl Activator {
                 }
 
                 result.files_installed += 1;
-            }
-
-            // Run activation script
-            // 运行激活脚本
-            if let Some(ref script) = generated.activation_script {
-                if self.verbose {
-                    println!("Running activation script: {}", script.display());
-                }
-
-                if !self.dry_run {
-                    let output = Command::new(script).env("N3V3_ROOT", &self.root).output()?;
-
-                    if !output.status.success() {
-                        return Err(ConfigError::Activation(format!(
-                            "activation script failed: {}",
-                            String::from_utf8_lossy(&output.stderr)
-                        )));
-                    }
-
-                    result.script_output =
-                        Some(String::from_utf8_lossy(&output.stdout).into_owned());
-                }
             }
 
             // Enable services
@@ -174,12 +155,12 @@ impl Activator {
     /// Test a configuration without activating.
     /// 测试配置但不激活。
     pub fn test(&self, generated: &GeneratedConfig) -> Result<TestResult, ConfigError> {
+        let root = checked_root(&self.root)?;
         let mut result = TestResult::new();
 
-        // Check all files can be installed
-        // 检查所有文件是否可以安装
         for file in &generated.files {
-            let target = resolve_target_under_root(&self.root, &file.target)?;
+            let target = resolve_target_under_root(&root, &file.target)?;
+            check_parent(&root, &target, false, &mut Vec::new())?;
 
             // Check if target directory exists or can be created
             // 检查目标目录是否存在或可以创建
@@ -202,16 +183,13 @@ impl Activator {
             result.files_checked += 1;
         }
 
-        // Check activation script
-        // 检查激活脚本
-        if let Some(ref script) = generated.activation_script
-            && !script.exists()
-        {
-            result
-                .errors
-                .push(format!("Activation script not found: {}", script.display()));
+        // Arbitrary shell is not confined by N3V3_ROOT; testing must not claim it is safe.
+        if let Some(script) = &generated.activation_script {
+            result.errors.push(format!(
+                "activation script {} is unsupported: N3V3_ROOT cannot confine shell execution",
+                script.display()
+            ));
         }
-
         result.success = result.errors.is_empty();
         Ok(result)
     }
@@ -237,10 +215,10 @@ impl Activator {
             "/etc/systemd/system/multi-user.target.wants/{}.service",
             service
         ));
-        let unit_path = resolve_target_under_root(&self.root, &unit_rel)?;
-        let wants_path = resolve_target_under_root(&self.root, &wants_rel)?;
-
-        if !unit_path.exists() {
+        let unit_path = resolve_target_under_root(&tx.root, &unit_rel)?;
+        let wants_path = resolve_target_under_root(&tx.root, &wants_rel)?;
+        check_parent(&tx.root, &unit_path, false, &mut Vec::new())?;
+        if !fs::metadata(&unit_path).is_ok_and(|metadata| metadata.is_file()) {
             return Err(ConfigError::Activation(format!(
                 "service unit file does not exist for '{}': {}",
                 service,
@@ -264,6 +242,7 @@ enum PathBackup {
         path: PathBuf,
         bytes: Vec<u8>,
         mode: Option<u32>,
+        owner: Option<(u32, u32)>,
     },
     Symlink {
         path: PathBuf,
@@ -273,56 +252,61 @@ enum PathBackup {
 
 /// File-system transaction used by activation for rollback.
 /// 激活使用的文件系统事务（用于回滚）。
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ActivationTransaction {
+    root: PathBuf,
     created_paths: Vec<PathBuf>,
     created_set: HashSet<PathBuf>,
+    created_dirs: Vec<PathBuf>,
     backups: Vec<PathBackup>,
     backup_set: HashSet<PathBuf>,
 }
 
 impl ActivationTransaction {
-    fn new() -> Self {
-        Self::default()
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            created_paths: Vec::new(),
+            created_set: HashSet::new(),
+            created_dirs: Vec::new(),
+            backups: Vec::new(),
+            backup_set: HashSet::new(),
+        }
     }
 
     fn install_file(&mut self, source: &Path, target: &Path, mode: u32) -> Result<(), ConfigError> {
-        self.capture_before_write(target)?;
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
+        let mut source_file = File::open(source)?;
+        self.prepare_target(target)?;
+        let owner = existing_file_ownership(target)?;
+        let (mut temp_file, temp_path) = create_temp_file(target)?;
+        let install_result = (|| -> Result<(), ConfigError> {
+            io::copy(&mut source_file, &mut temp_file)?;
+            apply_file_metadata(&temp_file, target, owner, Some(mode))?;
+            temp_file.sync_all()?;
+            replace_path(&temp_path, target)
+        })();
+        if install_result.is_err() {
+            let _ = fs::remove_file(&temp_path);
         }
-        fs::copy(source, target)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(target, fs::Permissions::from_mode(mode))?;
+        install_result
+    }
+
+    fn install_symlink(&mut self, path: &Path, target: &Path) -> Result<(), ConfigError> {
+        self.prepare_target(path)?;
+        let temp_path = unique_temp_path(path)?;
+        create_symlink(target, &temp_path)?;
+        if let Err(err) = fs::rename(&temp_path, path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(ConfigError::Io(err));
         }
         Ok(())
     }
 
-    fn install_symlink(&mut self, path: &Path, target: &Path) -> Result<(), ConfigError> {
-        self.capture_before_write(path)?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if let Ok(meta) = fs::symlink_metadata(path) {
-            if meta.is_dir() {
-                return Err(ConfigError::Activation(format!(
-                    "cannot overwrite directory with symlink: {}",
-                    path.display()
-                )));
-            }
-            fs::remove_file(path)?;
-        }
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(target, path)?;
-        }
-        #[cfg(not(unix))]
-        {
-            fs::write(path, target.to_string_lossy().as_bytes())?;
-        }
-        Ok(())
+    fn prepare_target(&mut self, path: &Path) -> Result<(), ConfigError> {
+        let mut new_dirs = Vec::new();
+        check_parent(&self.root, path, true, &mut new_dirs)?;
+        self.created_dirs.extend(new_dirs);
+        self.capture_before_write(path)
     }
 
     fn capture_before_write(&mut self, path: &Path) -> Result<(), ConfigError> {
@@ -330,36 +314,8 @@ impl ActivationTransaction {
             return Ok(());
         }
         match fs::symlink_metadata(path) {
-            Ok(metadata) => {
-                if metadata.file_type().is_symlink() {
-                    let target = fs::read_link(path)?;
-                    self.backups.push(PathBackup::Symlink {
-                        path: path.to_path_buf(),
-                        target,
-                    });
-                } else if metadata.is_file() {
-                    let bytes = fs::read(path)?;
-                    #[cfg(unix)]
-                    let mode = {
-                        use std::os::unix::fs::PermissionsExt;
-                        Some(metadata.permissions().mode())
-                    };
-                    #[cfg(not(unix))]
-                    let mode = None;
-                    self.backups.push(PathBackup::File {
-                        path: path.to_path_buf(),
-                        bytes,
-                        mode,
-                    });
-                } else {
-                    return Err(ConfigError::Activation(format!(
-                        "unsupported target path type: {}",
-                        path.display()
-                    )));
-                }
-                self.backup_set.insert(path.to_path_buf());
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            Ok(metadata) => self.capture_existing(path, &metadata)?,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
                 self.created_set.insert(path.to_path_buf());
                 self.created_paths.push(path.to_path_buf());
             }
@@ -368,74 +324,369 @@ impl ActivationTransaction {
         Ok(())
     }
 
-    fn rollback(&mut self) -> Result<(), ConfigError> {
-        for path in self.created_paths.iter().rev() {
-            match fs::symlink_metadata(path) {
-                Ok(meta) => {
-                    if meta.is_dir() {
-                        fs::remove_dir_all(path)?;
-                    } else {
-                        fs::remove_file(path)?;
-                    }
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(ConfigError::Io(err)),
+    fn capture_existing(
+        &mut self,
+        path: &Path,
+        metadata: &fs::Metadata,
+    ) -> Result<(), ConfigError> {
+        let backup = if metadata.file_type().is_symlink() {
+            PathBackup::Symlink {
+                path: path.to_path_buf(),
+                target: fs::read_link(path)?,
             }
-        }
-
-        for backup in self.backups.iter().rev() {
-            match backup {
-                PathBackup::File { path, bytes, mode } => {
-                    if let Some(parent) = path.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    match fs::symlink_metadata(path) {
-                        Ok(meta) => {
-                            if meta.is_dir() {
-                                fs::remove_dir_all(path)?;
-                            } else {
-                                fs::remove_file(path)?;
-                            }
-                        }
-                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(err) => return Err(ConfigError::Io(err)),
-                    }
-                    fs::write(path, bytes)?;
-                    #[cfg(unix)]
-                    if let Some(saved_mode) = mode {
-                        use std::os::unix::fs::PermissionsExt;
-                        fs::set_permissions(path, fs::Permissions::from_mode(*saved_mode))?;
-                    }
-                }
-                PathBackup::Symlink { path, target } => {
-                    if let Some(parent) = path.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    match fs::symlink_metadata(path) {
-                        Ok(meta) => {
-                            if meta.is_dir() {
-                                fs::remove_dir_all(path)?;
-                            } else {
-                                fs::remove_file(path)?;
-                            }
-                        }
-                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(err) => return Err(ConfigError::Io(err)),
-                    }
-                    #[cfg(unix)]
-                    {
-                        std::os::unix::fs::symlink(target, path)?;
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        fs::write(path, target.to_string_lossy().as_bytes())?;
-                    }
-                }
+        } else if metadata.is_file() {
+            PathBackup::File {
+                path: path.to_path_buf(),
+                bytes: fs::read(path)?,
+                mode: file_mode(metadata),
+                owner: file_ownership(metadata),
             }
-        }
-
+        } else {
+            return Err(ConfigError::Activation(format!(
+                "unsupported target path type: {}",
+                path.display()
+            )));
+        };
+        self.backups.push(backup);
+        self.backup_set.insert(path.to_path_buf());
         Ok(())
     }
+
+    fn rollback(&mut self) -> Result<(), ConfigError> {
+        let mut first_error = None;
+        for path in self.created_paths.iter().rev() {
+            record_error(&mut first_error, remove_created_path(path));
+        }
+        for backup in self.backups.iter().rev() {
+            record_error(&mut first_error, restore_backup(backup));
+        }
+        for path in self.created_dirs.iter().rev() {
+            record_error(&mut first_error, remove_created_dir(path));
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+}
+
+fn reject_activation_script(generated: &GeneratedConfig) -> Result<(), ConfigError> {
+    if let Some(script) = &generated.activation_script {
+        return Err(ConfigError::Activation(format!(
+            "activation script {} is unsupported: N3V3_ROOT cannot confine arbitrary shell execution",
+            script.display()
+        )));
+    }
+    Ok(())
+}
+
+fn checked_root(root: &Path) -> Result<PathBuf, ConfigError> {
+    let canonical = fs::canonicalize(root).map_err(|err| {
+        ConfigError::Activation(format!(
+            "failed to resolve activation root {}: {}",
+            root.display(),
+            err
+        ))
+    })?;
+    if !canonical.is_dir() {
+        return Err(ConfigError::Activation(format!(
+            "activation root is not a directory: {}",
+            root.display()
+        )));
+    }
+    let mut ancestor = PathBuf::new();
+    for component in canonical.components() {
+        ancestor.push(component);
+        check_trusted_directory(&ancestor, ancestor != canonical)?;
+    }
+    Ok(canonical)
+}
+
+#[cfg(unix)]
+fn check_trusted_directory(path: &Path, is_ancestor: bool) -> Result<(), ConfigError> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path)?;
+    let uid = unsafe { libc::geteuid() };
+    let is_sticky_parent = is_ancestor
+        && metadata.uid() == 0
+        && metadata.mode() & 0o1000 != 0
+        && metadata.mode() & 0o020 != 0;
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || (metadata.uid() != uid && metadata.uid() != 0)
+        || (metadata.mode() & 0o022 != 0 && !is_sticky_parent)
+    {
+        return Err(ConfigError::Activation(format!(
+            "untrusted writable activation directory: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn check_trusted_directory(_path: &Path, _is_ancestor: bool) -> Result<(), ConfigError> {
+    Ok(())
+}
+
+fn check_parent(
+    root: &Path,
+    target: &Path,
+    should_create: bool,
+    created_dirs: &mut Vec<PathBuf>,
+) -> Result<(), ConfigError> {
+    let parent = target.parent().ok_or_else(|| {
+        ConfigError::Activation(format!("target has no parent: {}", target.display()))
+    })?;
+    let relative = parent.strip_prefix(root).map_err(|_| {
+        ConfigError::Activation(format!(
+            "target escapes activation root: {}",
+            target.display()
+        ))
+    })?;
+    let mut current = root.to_path_buf();
+    check_trusted_directory(root, false)?;
+    for component in relative.components() {
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(ConfigError::Activation(format!(
+                    "target parent is a symlink: {}",
+                    current.display()
+                )));
+            }
+            Ok(metadata) if metadata.is_dir() => check_trusted_directory(&current, false)?,
+            Ok(_) => {
+                return Err(ConfigError::Activation(format!(
+                    "target parent is not a directory: {}",
+                    current.display()
+                )));
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound && should_create => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::DirBuilderExt;
+                    fs::DirBuilder::new().mode(0o755).create(&current)?;
+                }
+                #[cfg(not(unix))]
+                fs::create_dir(&current)?;
+                created_dirs.push(current.clone());
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(ConfigError::Io(err)),
+        }
+    }
+    Ok(())
+}
+
+fn create_temp_file(target: &Path) -> Result<(File, PathBuf), ConfigError> {
+    for _ in 0..MAX_TEMP_FILE_ATTEMPTS {
+        let path = unique_temp_path(target)?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(file) => return Ok((file, path)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(ConfigError::Io(err)),
+        }
+    }
+    Err(ConfigError::Activation(format!(
+        "failed to create temporary file beside {}",
+        target.display()
+    )))
+}
+
+fn unique_temp_path(target: &Path) -> Result<PathBuf, ConfigError> {
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    let parent = target.parent().ok_or_else(|| {
+        ConfigError::Activation(format!("target has no parent: {}", target.display()))
+    })?;
+    let name = target.file_name().ok_or_else(|| {
+        ConfigError::Activation(format!("target has no file name: {}", target.display()))
+    })?;
+    let nonce = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+    Ok(parent.join(format!(
+        ".{}.n3v3-{}-{}.tmp",
+        name.to_string_lossy(),
+        std::process::id(),
+        nonce
+    )))
+}
+
+fn replace_path(temp_path: &Path, target: &Path) -> Result<(), ConfigError> {
+    if let Err(err) = fs::rename(temp_path, target) {
+        let _ = fs::remove_file(temp_path);
+        return Err(ConfigError::Io(err));
+    }
+    Ok(())
+}
+
+fn restore_backup(backup: &PathBackup) -> Result<(), ConfigError> {
+    match backup {
+        PathBackup::File {
+            path,
+            bytes,
+            mode,
+            owner,
+        } => restore_file(path, bytes, *mode, *owner),
+        PathBackup::Symlink { path, target } => restore_symlink(path, target),
+    }
+}
+
+fn restore_file(
+    path: &Path,
+    bytes: &[u8],
+    mode: Option<u32>,
+    owner: Option<(u32, u32)>,
+) -> Result<(), ConfigError> {
+    let (mut temp_file, temp_path) = create_temp_file(path)?;
+    let restore_result = (|| -> Result<(), ConfigError> {
+        temp_file.write_all(bytes)?;
+        apply_file_metadata(&temp_file, path, owner, mode)?;
+        temp_file.sync_all()?;
+        replace_path(&temp_path, path)
+    })();
+    if restore_result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    restore_result
+}
+
+fn restore_symlink(path: &Path, target: &Path) -> Result<(), ConfigError> {
+    let temp_path = unique_temp_path(path)?;
+    create_symlink(target, &temp_path)?;
+    replace_path(&temp_path, path)
+}
+
+fn remove_created_path(path: &Path) -> Result<(), ConfigError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Err(ConfigError::Activation(format!(
+            "refusing to remove unexpected directory during rollback: {}",
+            path.display()
+        ))),
+        Ok(_) => fs::remove_file(path).map_err(ConfigError::Io),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(ConfigError::Io(err)),
+    }
+}
+
+fn remove_created_dir(path: &Path) -> Result<(), ConfigError> {
+    match fs::remove_dir(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(ConfigError::Io(err)),
+    }
+}
+
+fn record_error(first_error: &mut Option<ConfigError>, result: Result<(), ConfigError>) {
+    if first_error.is_none()
+        && let Err(err) = result
+    {
+        *first_error = Some(err);
+    }
+}
+
+fn apply_file_metadata(
+    file: &File,
+    target: &Path,
+    owner: Option<(u32, u32)>,
+    mode: Option<u32>,
+) -> Result<(), ConfigError> {
+    if let Some((uid, gid)) = owner {
+        set_file_ownership(file, uid, gid).map_err(|err| {
+            ConfigError::Activation(format!(
+                "failed to preserve ownership of {} (uid {uid}, gid {gid}): {err}",
+                target.display()
+            ))
+        })?;
+    }
+    if let Some(mode) = mode {
+        set_file_mode(file, mode).map_err(|err| {
+            ConfigError::Activation(format!(
+                "failed to set mode of {} to {mode:o}: {err}",
+                target.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn existing_file_ownership(target: &Path) -> Result<Option<(u32, u32)>, ConfigError> {
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.is_file() => Ok(file_ownership(&metadata)),
+        Ok(_) => Ok(None),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(ConfigError::Activation(format!(
+            "failed to inspect ownership of {}: {err}",
+            target.display()
+        ))),
+    }
+}
+
+#[cfg(not(unix))]
+fn existing_file_ownership(_target: &Path) -> Result<Option<(u32, u32)>, ConfigError> {
+    Ok(None)
+}
+
+#[cfg(unix)]
+fn file_ownership(metadata: &fs::Metadata) -> Option<(u32, u32)> {
+    use std::os::unix::fs::MetadataExt;
+    Some((metadata.uid(), metadata.gid()))
+}
+
+#[cfg(not(unix))]
+fn file_ownership(_metadata: &fs::Metadata) -> Option<(u32, u32)> {
+    None
+}
+
+#[cfg(unix)]
+fn set_file_ownership(file: &File, uid: u32, gid: u32) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: file remains open while fchown uses its borrowed descriptor.
+    if unsafe { libc::fchown(file.as_raw_fd(), uid as libc::uid_t, gid as libc::gid_t) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_file_ownership(_file: &File, _uid: u32, _gid: u32) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn file_mode(metadata: &fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(metadata.permissions().mode())
+}
+
+#[cfg(not(unix))]
+fn file_mode(_metadata: &fs::Metadata) -> Option<u32> {
+    None
+}
+
+#[cfg(unix)]
+fn set_file_mode(file: &File, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    file.set_permissions(fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+fn set_file_mode(_file: &File, _mode: u32) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_symlink(target: &Path, path: &Path) -> Result<(), ConfigError> {
+    std::os::unix::fs::symlink(target, path).map_err(ConfigError::Io)
+}
+
+#[cfg(not(unix))]
+fn create_symlink(target: &Path, path: &Path) -> Result<(), ConfigError> {
+    fs::write(path, target.to_string_lossy().as_bytes()).map_err(ConfigError::Io)
 }
 
 impl Default for Activator {
@@ -575,6 +826,51 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    fn set_distinct_group_if_permitted(path: &Path) -> io::Result<(u32, u32)> {
+        let original = fs::metadata(path)?;
+        let (uid, gid) = file_ownership(&original).expect("Unix file has ownership");
+        // Restricted root containers may not have CAP_CHOWN; the current-group case still runs.
+        if unsafe { libc::geteuid() } == 0
+            && let Some(other_gid) = gid.checked_add(1)
+        {
+            let file = File::open(path)?;
+            match set_file_ownership(&file, uid, other_gid) {
+                Ok(()) => return Ok((uid, other_gid)),
+                Err(err) if err.raw_os_error() == Some(libc::EPERM) => {}
+                Err(err) => return Err(err),
+            }
+        }
+        Ok((uid, gid))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn activate_replacing_existing_file_preserves_owner_group_and_mode()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempdir()?;
+        let target = root.path().join("etc/existing.conf");
+        fs::create_dir_all(target.parent().expect("target has parent"))?;
+        fs::write(&target, "old-content\n")?;
+        let expected_owner = set_distinct_group_if_permitted(&target)?;
+        let source = root.path().join("source");
+        fs::write(&source, "new-content\n")?;
+        let mut generated = GeneratedConfig::new();
+        generated.files.push(GeneratedFile {
+            source,
+            target: PathBuf::from("/etc/existing.conf"),
+            mode: 0o640,
+        });
+
+        Activator::new().root(root.path()).activate(&generated)?;
+        let metadata = fs::metadata(&target)?;
+        assert_eq!(fs::read_to_string(&target)?, "new-content\n");
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o640);
+        assert_eq!(file_ownership(&metadata), Some(expected_owner));
+        Ok(())
+    }
+
     #[test]
     fn test_activate_enables_service_symlink() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempdir()?;
@@ -608,57 +904,168 @@ mod tests {
     }
 
     #[test]
-    fn test_activate_rolls_back_files_on_script_failure() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn activate_supplied_script_fails_before_mutation() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempdir()?;
-        let etc_dir = root.path().join("etc");
-        fs::create_dir_all(&etc_dir)?;
-
-        let existing_target = etc_dir.join("existing.conf");
-        fs::write(&existing_target, "old-content\n")?;
-
-        let src_existing = root.path().join("existing.new");
-        fs::write(&src_existing, "new-content\n")?;
-        let src_new = root.path().join("new.conf.src");
-        fs::write(&src_new, "new-file\n")?;
-
-        let script = root.path().join("fail.sh");
-        write_exec_script(&script, "#!/bin/sh\necho fail >&2\nexit 1\n")?;
+        let target = root.path().join("etc/existing.conf");
+        fs::create_dir_all(target.parent().expect("target has parent"))?;
+        fs::write(&target, "old-content\n")?;
+        let source = root.path().join("existing.new");
+        fs::write(&source, "new-content\n")?;
+        let marker = root.path().join("script-ran");
+        let script = root.path().join("activate.sh");
+        write_exec_script(
+            &script,
+            &format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )?;
 
         let mut generated = GeneratedConfig::new();
         generated.files.push(GeneratedFile {
-            source: src_existing,
+            source,
             target: PathBuf::from("/etc/existing.conf"),
-            mode: 0o644,
-        });
-        generated.files.push(GeneratedFile {
-            source: src_new,
-            target: PathBuf::from("/etc/new.conf"),
             mode: 0o644,
         });
         generated.activation_script = Some(script);
 
-        let activator = Activator::new().root(root.path());
-        let err = activator
+        let err = Activator::new()
+            .root(root.path())
             .activate(&generated)
-            .expect_err("activation should fail");
-        // The fixture only fails by exit code where a shell runs it. On Windows
-        // the script cannot be launched at all, so the reason differs while the
-        // rollback below still has to hold.
-        // 该脚本只在有 shell 的平台上按退出码失败。Windows 上根本无法启动它，因此失败
-        // 原因不同，但下面的回滚仍然必须成立。
+            .expect_err("supplied script must be rejected");
+        assert!(err.to_string().contains("cannot confine"));
+        assert_eq!(fs::read_to_string(target)?, "old-content\n");
+        assert!(!marker.exists(), "rejected activation script must not run");
+        Ok(())
+    }
+
+    #[test]
+    fn activate_dry_run_rejects_supplied_script() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        let mut generated = GeneratedConfig::new();
+        generated.activation_script = Some(root.path().join("activate.sh"));
+
+        let err = Activator::new()
+            .root(root.path())
+            .dry_run(true)
+            .activate(&generated)
+            .expect_err("dry run must not promise arbitrary script execution");
+        assert!(err.to_string().contains("cannot confine"));
+        Ok(())
+    }
+
+    #[test]
+    fn activate_later_failure_restores_file_mode_owner_and_symlink()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        let etc = root.path().join("etc");
+        fs::create_dir_all(&etc)?;
+        let file_target = etc.join("existing.conf");
+        fs::write(&file_target, "old-content\n")?;
         #[cfg(unix)]
-        assert!(err.to_string().contains("activation script failed"));
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&file_target, fs::Permissions::from_mode(0o600))?;
+        }
+        #[cfg(unix)]
+        let original_owner = set_distinct_group_if_permitted(&file_target)?;
+        let link_target = etc.join("linked.conf");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("original.conf", &link_target)?;
         #[cfg(not(unix))]
-        assert!(
-            !err.to_string().is_empty(),
-            "the activation must fail with a reported reason"
+        fs::write(&link_target, "old-link-placeholder")?;
+
+        let file_source = root.path().join("existing.new");
+        fs::write(&file_source, "new-content\n")?;
+        let link_source = root.path().join("linked.new");
+        fs::write(&link_source, "replacement\n")?;
+        let mut generated = GeneratedConfig::new();
+        generated.files.push(GeneratedFile {
+            source: file_source,
+            target: PathBuf::from("/etc/existing.conf"),
+            mode: 0o644,
+        });
+        generated.files.push(GeneratedFile {
+            source: link_source,
+            target: PathBuf::from("/etc/linked.conf"),
+            mode: 0o644,
+        });
+        generated.files.push(GeneratedFile {
+            source: root.path().join("missing"),
+            target: PathBuf::from("/etc/later.conf"),
+            mode: 0o644,
+        });
+
+        Activator::new()
+            .root(root.path())
+            .activate(&generated)
+            .expect_err("missing later source must fail activation");
+        assert_eq!(fs::read_to_string(&file_target)?, "old-content\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&file_target)?.permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                file_ownership(&fs::metadata(&file_target)?),
+                Some(original_owner)
+            );
+            assert_eq!(fs::read_link(&link_target)?, PathBuf::from("original.conf"));
+        }
+        #[cfg(not(unix))]
+        assert_eq!(fs::read_to_string(&link_target)?, "old-link-placeholder");
+        assert!(!etc.join("later.conf").exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn activate_symlinked_parent_leaves_outside_sentinel_unchanged()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        let outside = tempdir()?;
+        let sentinel = outside.path().join("sentinel");
+        fs::write(&sentinel, "outside-content\n")?;
+        std::os::unix::fs::symlink(outside.path(), root.path().join("etc"))?;
+        let source = root.path().join("replacement");
+        fs::write(&source, "replacement\n")?;
+        let mut generated = GeneratedConfig::new();
+        generated.files.push(GeneratedFile {
+            source,
+            target: PathBuf::from("/etc/sentinel"),
+            mode: 0o644,
+        });
+
+        let err = Activator::new()
+            .root(root.path())
+            .activate(&generated)
+            .expect_err("symlinked parent must be rejected");
+        assert!(err.to_string().contains("parent is a symlink"));
+        assert_eq!(fs::read_to_string(sentinel)?, "outside-content\n");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn activate_later_service_failure_restores_existing_symlink()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        let systemd = root.path().join("etc/systemd/system");
+        let wants = systemd.join("multi-user.target.wants");
+        fs::create_dir_all(&wants)?;
+        let enabled = wants.join("demo.service");
+        std::os::unix::fs::symlink("../old-demo.service", &enabled)?;
+        fs::write(systemd.join("demo.service"), "[Service]\n")?;
+        let mut generated = GeneratedConfig::new();
+        generated.services = vec!["demo".to_string(), "../invalid".to_string()];
+
+        Activator::new()
+            .root(root.path())
+            .activate(&generated)
+            .expect_err("later invalid service must roll back earlier service");
+        assert_eq!(
+            fs::read_link(enabled)?,
+            PathBuf::from("../old-demo.service")
         );
-
-        let existing_after = fs::read_to_string(&existing_target)?;
-        assert_eq!(existing_after, "old-content\n");
-        assert!(!root.path().join("etc/new.conf").exists());
-
         Ok(())
     }
 
@@ -673,6 +1080,76 @@ mod tests {
             .activate(&generated)
             .expect_err("activation should fail");
         assert!(err.to_string().contains("invalid service name"));
+        Ok(())
+    }
+    #[cfg(unix)]
+    #[test]
+    fn activate_untrusted_writable_root_rejects_without_writing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempdir()?;
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o777))?;
+        let source = root.path().join("source");
+        fs::write(&source, "private")?;
+        let mut generated = GeneratedConfig::new();
+        generated.files.push(GeneratedFile {
+            source,
+            target: PathBuf::from("/etc/secret"),
+            mode: 0o600,
+        });
+        let error = Activator::new()
+            .root(root.path())
+            .activate(&generated)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("untrusted writable activation directory")
+        );
+        assert!(!root.path().join("etc").exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn activate_untrusted_writable_descendant_rejects_without_writing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempdir()?;
+        let etc = root.path().join("etc");
+        fs::create_dir(&etc)?;
+        fs::set_permissions(&etc, fs::Permissions::from_mode(0o777))?;
+        let source = root.path().join("source");
+        fs::write(&source, "private")?;
+        let mut generated = GeneratedConfig::new();
+        generated.files.push(GeneratedFile {
+            source,
+            target: PathBuf::from("/etc/secret"),
+            mode: 0o600,
+        });
+        let error = Activator::new()
+            .root(root.path())
+            .activate(&generated)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("untrusted writable activation directory")
+        );
+        assert!(!etc.join("secret").exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn activation_temp_file_is_private_before_writing() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempdir()?;
+        let target = root.path().join("secret");
+        let (file, temp_path) = create_temp_file(&target)?;
+        assert_eq!(file.metadata()?.permissions().mode() & 0o777, 0o600);
+        drop(file);
+        fs::remove_file(temp_path)?;
         Ok(())
     }
 }

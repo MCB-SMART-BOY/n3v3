@@ -19,9 +19,10 @@
 //! - 目录采用递归格式
 
 use n3v3_derive::Hash;
-use std::fs;
+use std::collections::HashSet;
+use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
 /// NAR magic string. / NAR 魔术字符串。
@@ -81,6 +82,51 @@ pub enum NarError {
     /// Path traversal attempt. / 路径遍历尝试。
     #[error("path traversal attempt detected")]
     PathTraversal,
+}
+
+/// Create missing ancestors without following an existing symlink.
+fn ensure_safe_parent(dest: &Path) -> Result<(), NarError> {
+    let Some(parent) = dest.parent() else {
+        return Ok(());
+    };
+    let mut current = PathBuf::new();
+    for component in parent.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::CurDir => {
+                current.push(component.as_os_str());
+                continue;
+            }
+            Component::ParentDir => return Err(NarError::PathTraversal),
+            Component::Normal(part) => current.push(part),
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(NarError::PathTraversal);
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(NarError::InvalidFormat(format!(
+                    "archive parent is not a directory: {}",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => fs::create_dir(&current)?,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+/// Reject occupied destinations, including dangling symlinks.
+fn ensure_unoccupied(dest: &Path) -> Result<(), NarError> {
+    match fs::symlink_metadata(dest) {
+        Ok(_) => Err(NarError::InvalidFormat(format!(
+            "archive destination already exists: {}",
+            dest.display()
+        ))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// NAR writer for creating archives.
@@ -237,7 +283,14 @@ impl<R: Read> NarReader<R> {
             )));
         }
 
-        self.extract_entry(dest)
+        self.extract_entry(dest)?;
+        let mut trailing = [0u8; 1];
+        if self.reader.read(&mut trailing)? != 0 {
+            return Err(NarError::InvalidFormat(
+                "trailing data after root entry".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Extract a single entry (recursive).
@@ -265,45 +318,36 @@ impl<R: Read> NarReader<R> {
     /// Extract a regular file.
     /// 提取普通文件。
     fn extract_regular(&mut self, dest: &Path) -> Result<(), NarError> {
-        let mut executable = false;
-        let mut contents_written = false;
+        let mut is_executable = false;
+        let mut has_contents = false;
 
         loop {
-            let tag = self.read_str()?;
-            match tag.as_str() {
-                "executable" => {
-                    self.read_str()?; // Empty string
-                    executable = true;
+            match self.read_str()?.as_str() {
+                "executable" if !is_executable && !has_contents => {
+                    self.expect_str("")?;
+                    is_executable = true;
                 }
-                "contents" => {
+                "contents" if !has_contents => {
                     let contents = self.read_bytes()?;
-
-                    // Create parent directories
-                    // 创建父目录
-                    if let Some(parent) = dest.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-
-                    fs::write(dest, &contents)?;
-                    contents_written = true;
+                    ensure_safe_parent(dest)?;
+                    let mut file = OpenOptions::new().write(true).create_new(true).open(dest)?;
+                    file.write_all(&contents)?;
+                    has_contents = true;
                 }
-                ")" => {
-                    // Set permissions after writing file
-                    // 写入文件后设置权限
-                    if contents_written {
-                        let mode = if executable {
+                ")" if has_contents => {
+                    set_mode(
+                        dest,
+                        if is_executable {
                             EXECUTABLE_MODE
                         } else {
                             REGULAR_MODE
-                        };
-                        set_mode(dest, mode)?;
-                    }
+                        },
+                    )?;
                     return Ok(());
                 }
-                _ => {
+                tag => {
                     return Err(NarError::InvalidFormat(format!(
-                        "unexpected tag in regular file: {}",
-                        tag
+                        "unexpected or duplicate tag in regular file: {tag}"
                     )));
                 }
             }
@@ -313,7 +357,9 @@ impl<R: Read> NarReader<R> {
     /// Extract a directory.
     /// 提取目录。
     fn extract_directory(&mut self, dest: &Path) -> Result<(), NarError> {
-        fs::create_dir_all(dest)?;
+        ensure_safe_parent(dest)?;
+        fs::create_dir(dest)?;
+        let mut names = HashSet::new();
 
         loop {
             let tag = self.read_str()?;
@@ -323,18 +369,23 @@ impl<R: Read> NarReader<R> {
                     self.expect_str("name")?;
 
                     let name = self.read_str()?;
-
-                    // Security check: prevent path traversal
-                    // 安全检查：防止路径遍历
-                    if name.contains('/') || name.contains('\\') || name == ".." || name == "." {
+                    if name.is_empty()
+                        || name.contains('/')
+                        || name.contains('\\')
+                        || name.contains('\0')
+                        || name == ".."
+                        || name == "."
+                    {
                         return Err(NarError::PathTraversal);
                     }
-
+                    if !names.insert(name.clone()) {
+                        return Err(NarError::InvalidFormat(format!(
+                            "duplicate directory entry: {name}"
+                        )));
+                    }
                     self.expect_str("node")?;
-
                     let entry_path = dest.join(&name);
                     self.extract_entry(&entry_path)?;
-
                     self.expect_str(")")?;
                 }
                 ")" => {
@@ -355,18 +406,9 @@ impl<R: Read> NarReader<R> {
     fn extract_symlink(&mut self, dest: &Path) -> Result<(), NarError> {
         self.expect_str("target")?;
         let target = self.read_str()?;
-
-        // Create parent directories
-        // 创建父目录
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        // Remove existing file if present
-        // 如果存在则删除现有文件
-        if dest.exists() || dest.is_symlink() {
-            fs::remove_file(dest)?;
-        }
+        self.expect_str(")")?;
+        ensure_safe_parent(dest)?;
+        ensure_unoccupied(dest)?;
 
         #[cfg(unix)]
         std::os::unix::fs::symlink(&target, dest)?;
@@ -382,10 +424,6 @@ impl<R: Read> NarReader<R> {
                 std::os::windows::fs::symlink_file(&target, dest)?;
             }
         }
-
-        // Read the closing paren
-        // 读取闭括号
-        self.expect_str(")")?;
 
         Ok(())
     }
@@ -440,6 +478,11 @@ impl<R: Read> NarReader<R> {
             let mut pad_buf = vec![0u8; padding as usize];
             self.reader.read_exact(&mut pad_buf)?;
             self.bytes_read += padding;
+            if pad_buf.iter().any(|byte| *byte != 0) {
+                return Err(NarError::InvalidFormat(
+                    "non-zero NAR string padding".to_string(),
+                ));
+            }
         }
 
         Ok(data)
@@ -497,6 +540,38 @@ pub fn extract_nar(data: &[u8], dest: &Path) -> Result<(), NarError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn append_element(archive: &mut Vec<u8>, element: &[u8]) {
+        archive.extend_from_slice(&(element.len() as u64).to_le_bytes());
+        archive.extend_from_slice(element);
+        archive.resize(archive.len() + (8 - element.len() % 8) % 8, 0);
+    }
+
+    fn append_regular_node(archive: &mut Vec<u8>, contents: &[u8]) {
+        for value in [b"(".as_slice(), b"type", b"regular", b"contents"] {
+            append_element(archive, value);
+        }
+        append_element(archive, contents);
+        append_element(archive, b")");
+    }
+
+    fn directory_archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut archive = Vec::new();
+        for value in [NAR_MAGIC.as_bytes(), b"(", b"type", b"directory"] {
+            append_element(&mut archive, value);
+        }
+        for (name, contents) in entries {
+            for value in [b"entry".as_slice(), b"(", b"name"] {
+                append_element(&mut archive, value);
+            }
+            append_element(&mut archive, name.as_bytes());
+            append_element(&mut archive, b"node");
+            append_regular_node(&mut archive, contents);
+            append_element(&mut archive, b")");
+        }
+        append_element(&mut archive, b")");
+        archive
+    }
     use tempfile::TempDir;
 
     #[test]
@@ -663,5 +738,100 @@ mod tests {
         // The path traversal guard in extract_directory checks for:
         //   name.contains('/') || name.contains('\\') || name == ".." || name == "."
         // These guards prevent malicious archives from writing outside dest.
+    }
+
+    #[test]
+    fn extract_duplicate_directory_name_returns_error() {
+        let temp = TempDir::new().unwrap();
+        let archive = directory_archive(&[("same", b"first"), ("same", b"second")]);
+
+        let error = extract_nar(&archive, &temp.path().join("out")).unwrap_err();
+
+        assert!(matches!(error, NarError::InvalidFormat(message) if message.contains("duplicate")));
+    }
+
+    #[test]
+    fn extract_unsafe_directory_names_returns_path_traversal() {
+        for (index, name) in [
+            "/absolute",
+            "../escape",
+            "nested/file",
+            "nested\\file",
+            ".",
+            "..",
+            "",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let temp = TempDir::new().unwrap();
+            let archive = directory_archive(&[(name, b"payload")]);
+            let error =
+                extract_nar(&archive, &temp.path().join(format!("out-{index}"))).unwrap_err();
+            assert!(matches!(error, NarError::PathTraversal), "name: {name:?}");
+        }
+    }
+
+    #[test]
+    fn extract_existing_destination_does_not_clobber_content() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::write(&source, b"replacement").unwrap();
+        fs::write(&destination, b"original").unwrap();
+        let archive = create_nar(&source).unwrap();
+
+        assert!(extract_nar(&archive, &destination).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"original");
+    }
+
+    #[test]
+    fn extract_archive_with_trailing_data_returns_error() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        fs::write(&source, b"payload").unwrap();
+        let mut archive = create_nar(&source).unwrap();
+        archive.push(0);
+
+        let error = extract_nar(&archive, &temp.path().join("destination")).unwrap_err();
+        assert!(matches!(error, NarError::InvalidFormat(message) if message.contains("trailing")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_parent_symlink_does_not_escape_destination() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let outside = temp.path().join("outside");
+        let parent_link = temp.path().join("parent-link");
+        fs::write(&source, b"payload").unwrap();
+        fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, &parent_link).unwrap();
+        let archive = create_nar(&source).unwrap();
+
+        let error = extract_nar(&archive, &parent_link.join("escaped")).unwrap_err();
+
+        assert!(matches!(error, NarError::PathTraversal));
+        assert!(!outside.join("escaped").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_directory_preserves_internal_symlink() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("target"), b"payload").unwrap();
+        std::os::unix::fs::symlink("target", source.join("link")).unwrap();
+        let archive = create_nar(&source).unwrap();
+        let destination = temp.path().join("destination");
+
+        extract_nar(&archive, &destination).unwrap();
+
+        assert_eq!(
+            fs::read_link(destination.join("link")).unwrap(),
+            Path::new("target")
+        );
+        assert_eq!(fs::read(destination.join("link")).unwrap(), b"payload");
     }
 }

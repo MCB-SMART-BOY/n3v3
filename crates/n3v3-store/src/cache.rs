@@ -7,12 +7,12 @@
 //! 避免从源码重新构建包。
 
 use crate::nar::{self, NarError};
-use crate::{Database, PathInfo, Store, StoreError};
+use crate::{Database, Store, StoreError};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use n3v3_derive::{Derivation, Hash, StorePath};
-use n3v3_fetch::{FetchError, Fetcher};
+use reqwest::Url;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -21,6 +21,51 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
+
+const MAX_COMPRESSED_NAR_SIZE: u64 = 256 * 1024 * 1024;
+const MAX_NARINFO_SIZE: u64 = 1024 * 1024;
+const MAX_NAR_SIZE: u64 = 512 * 1024 * 1024;
+const REMOTE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+const MAX_CACHE_REDIRECTS: usize = 10;
+
+fn ensure_size_within_limit(size: u64, limit: u64, field: &str) -> Result<(), CacheError> {
+    if size > limit {
+        return Err(CacheError::InvalidManifest(format!(
+            "{field} {size} exceeds cache limit {limit}"
+        )));
+    }
+    Ok(())
+}
+
+fn read_bounded_nar<R: Read>(reader: R, limit: u64, field: &str) -> Result<Vec<u8>, CacheError> {
+    let mut output = Vec::new();
+    reader.take(limit + 1).read_to_end(&mut output)?;
+    ensure_size_within_limit(output.len() as u64, limit, field)?;
+    Ok(output)
+}
+
+struct BoundedNarWriter {
+    output: Vec<u8>,
+    limit: u64,
+    is_over_limit: bool,
+}
+
+impl Write for BoundedNarWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if (bytes.len() as u64) > self.limit - self.output.len() as u64 {
+            self.is_over_limit = true;
+            return Err(std::io::Error::other(
+                "decompressed NAR exceeds cache limit",
+            ));
+        }
+        self.output.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 /// Create a placeholder derivation for cached paths.
 /// 为缓存路径创建占位推导。
@@ -85,6 +130,31 @@ pub enum CacheError {
     /// Signature verification failure. / 签名验证失败。
     #[error("signature verification failed: {0}")]
     Signature(String),
+
+    /// Atomically publishing a verified substitute failed. / 原子发布替换结果失败。
+    #[error("failed to publish verified substitute at {path:?}: {source}")]
+    Publish {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// Failed to discard an invalid cached download. / 清理无效缓存下载失败。
+    #[error(
+        "failed to discard invalid cached download at {path:?}: {source}; original error: {original}"
+    )]
+    Cleanup {
+        path: PathBuf,
+        source: std::io::Error,
+        #[source]
+        original: Box<CacheError>,
+    },
+}
+
+struct StagedPath {
+    _directory: tempfile::TempDir,
+    path: PathBuf,
+    nar_hash: Hash,
 }
 
 /// A cached store path with metadata.
@@ -102,6 +172,10 @@ pub struct CachedPath {
 
     /// Size in bytes (uncompressed). / 大小（字节，未压缩）。
     pub size: u64,
+
+    /// Declared compressed file size, absent in legacy JSON manifests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_size: Option<u64>,
 
     /// Compression format. / 压缩格式。
     pub compression: CompressionFormat,
@@ -358,19 +432,72 @@ fn is_absolute_cache_url(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://")
 }
 
-fn resolve_narinfo_url(url: &str, source: NarInfoSource<'_>) -> String {
-    if is_absolute_cache_url(url) {
-        return url.to_string();
+fn parse_remote_http_url(url: &str) -> Result<Url, CacheError> {
+    let parsed = Url::parse(url).map_err(|err| {
+        CacheError::InvalidManifest(format!("invalid remote cache URL '{url}': {err}"))
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err(CacheError::InvalidManifest(format!(
+            "remote cache URL '{url}' must be HTTP(S) without credentials"
+        )));
     }
+    Ok(parsed)
+}
 
+fn remote_cache_client(url: &Url) -> Result<Client, CacheError> {
+    let origin = url.origin();
+    Client::builder()
+        .timeout(REMOTE_DOWNLOAD_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.url().origin() != origin {
+                return attempt.error("remote cache redirect changed origin");
+            }
+            if attempt.previous().len() >= MAX_CACHE_REDIRECTS {
+                return attempt.error("remote cache redirect limit exceeded");
+            }
+            attempt.follow()
+        }))
+        .build()
+        .map_err(|err| CacheError::Fetch(format!("failed to create client for {url}: {err}")))
+}
+
+fn resolve_narinfo_url(url: &str, source: NarInfoSource<'_>) -> Result<String, CacheError> {
     match source {
-        NarInfoSource::Local(base) => base.join(url).to_string_lossy().to_string(),
+        NarInfoSource::Local(base) => {
+            if is_absolute_cache_url(url) {
+                Ok(url.to_string())
+            } else {
+                Ok(base.join(url).to_string_lossy().to_string())
+            }
+        }
         NarInfoSource::Remote(base) => {
-            format!(
-                "{}/{}",
-                base.trim_end_matches('/'),
-                url.trim_start_matches('/')
-            )
+            let base_url = parse_remote_http_url(base)?;
+            if url.starts_with('/') {
+                return Err(CacheError::InvalidManifest(format!(
+                    "narinfo URL '{url}' escapes configured remote cache origin '{base}'"
+                )));
+            }
+            let base_with_slash =
+                parse_remote_http_url(&format!("{}/", base.trim_end_matches('/')))?;
+            let resolved = base_with_slash.join(url).map_err(|err| {
+                CacheError::InvalidManifest(format!(
+                    "invalid narinfo URL '{url}' from '{base}': {err}"
+                ))
+            })?;
+            if !matches!(resolved.scheme(), "http" | "https")
+                || resolved.origin() != base_url.origin()
+                || !resolved.username().is_empty()
+                || resolved.password().is_some()
+            {
+                return Err(CacheError::InvalidManifest(format!(
+                    "narinfo URL '{url}' escapes configured remote cache origin '{base}'"
+                )));
+            }
+            Ok(resolved.to_string())
         }
     }
 }
@@ -415,20 +542,6 @@ fn should_retry_reqwest_error(error: &reqwest::Error) -> bool {
         return should_retry_http_status(status);
     }
     error.is_timeout() || error.is_connect()
-}
-
-fn should_retry_fetch_error(error: &FetchError) -> bool {
-    match error {
-        FetchError::Http(http_error) => should_retry_reqwest_error(http_error),
-        _ => false,
-    }
-}
-
-fn is_fetch_http_status(error: &FetchError, status: reqwest::StatusCode) -> bool {
-    matches!(
-        error,
-        FetchError::Http(http_error) if http_error.status() == Some(status)
-    )
 }
 
 fn decode_prefixed_base64<const N: usize>(
@@ -541,9 +654,6 @@ pub struct BinaryCache {
 
     /// Local cache directory for downloads. / 下载的本地缓存目录。
     cache_dir: PathBuf,
-
-    /// Fetcher for remote downloads. / 用于远程下载的获取器。
-    fetcher: Fetcher,
 }
 
 impl BinaryCache {
@@ -553,14 +663,10 @@ impl BinaryCache {
         let cache_dir = store.root().join("cache");
         fs::create_dir_all(&cache_dir)?;
 
-        let fetcher = Fetcher::new(cache_dir.clone())
-            .map_err(|e: n3v3_fetch::FetchError| CacheError::Fetch(e.to_string()))?;
-
         Ok(Self {
             store,
             caches: Vec::new(),
             cache_dir,
-            fetcher,
         })
     }
 
@@ -575,54 +681,102 @@ impl BinaryCache {
     }
 
     fn fetch_text_with_retry(&self, url: &str) -> Result<String, CacheError> {
+        let parsed = parse_remote_http_url(url)?;
+        let client = remote_cache_client(&parsed)?;
         for attempt in 0..REMOTE_RETRY_ATTEMPTS {
-            match self.fetcher.fetch_text(url) {
-                Ok(content) => return Ok(content),
+            let response = match client.get(parsed.clone()).send() {
+                Ok(response) => response,
+                Err(err)
+                    if should_retry_reqwest_error(&err) && attempt + 1 < REMOTE_RETRY_ATTEMPTS =>
+                {
+                    std::thread::sleep(remote_retry_delay(attempt));
+                    continue;
+                }
                 Err(err) => {
-                    if is_fetch_http_status(&err, reqwest::StatusCode::NOT_FOUND) {
-                        return Err(CacheError::NotFound(url.to_string()));
-                    }
-                    if should_retry_fetch_error(&err) && attempt + 1 < REMOTE_RETRY_ATTEMPTS {
-                        std::thread::sleep(remote_retry_delay(attempt));
-                        continue;
-                    }
                     return Err(CacheError::Fetch(format!(
-                        "failed to fetch remote text {}: {}",
-                        url, err
+                        "failed to fetch remote narinfo {url}: {err}"
                     )));
                 }
+            };
+            let status = response.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Err(CacheError::NotFound(url.to_string()));
             }
+            if should_retry_http_status(status) && attempt + 1 < REMOTE_RETRY_ATTEMPTS {
+                std::thread::sleep(remote_retry_delay(attempt));
+                continue;
+            }
+            if !status.is_success() {
+                return Err(CacheError::Fetch(format!(
+                    "failed to fetch remote narinfo {url}: HTTP {status}"
+                )));
+            }
+            let size_context = format!("narinfo size at {url}");
+            if let Some(length) = response.content_length() {
+                ensure_size_within_limit(length, MAX_NARINFO_SIZE, &size_context)?;
+            }
+            let mut content = Vec::new();
+            response
+                .take(MAX_NARINFO_SIZE + 1)
+                .read_to_end(&mut content)
+                .map_err(|err| {
+                    CacheError::Fetch(format!("failed to read remote narinfo {url}: {err}"))
+                })?;
+            ensure_size_within_limit(content.len() as u64, MAX_NARINFO_SIZE, &size_context)?;
+            return String::from_utf8(content).map_err(|err| {
+                CacheError::InvalidManifest(format!("invalid UTF-8 in narinfo at {url}: {err}"))
+            });
         }
-
         Err(CacheError::Fetch(format!(
-            "failed to fetch remote text after {} attempts: {}",
-            REMOTE_RETRY_ATTEMPTS, url
+            "failed to fetch remote narinfo {url} after {REMOTE_RETRY_ATTEMPTS} attempts"
         )))
     }
 
     fn fetch_file_with_retry(&self, url: &str, dest: &Path) -> Result<(), CacheError> {
+        let parsed = parse_remote_http_url(url)?;
+        let client = remote_cache_client(&parsed)?;
         for attempt in 0..REMOTE_RETRY_ATTEMPTS {
-            match self.fetcher.fetch_file(url, dest) {
-                Ok(()) => return Ok(()),
+            let response = match client.get(parsed.clone()).send() {
+                Ok(response) => response,
+                Err(err)
+                    if should_retry_reqwest_error(&err) && attempt + 1 < REMOTE_RETRY_ATTEMPTS =>
+                {
+                    std::thread::sleep(remote_retry_delay(attempt));
+                    continue;
+                }
                 Err(err) => {
-                    if is_fetch_http_status(&err, reqwest::StatusCode::NOT_FOUND) {
-                        return Err(CacheError::NotFound(url.to_string()));
-                    }
-                    if should_retry_fetch_error(&err) && attempt + 1 < REMOTE_RETRY_ATTEMPTS {
-                        std::thread::sleep(remote_retry_delay(attempt));
-                        continue;
-                    }
                     return Err(CacheError::Fetch(format!(
-                        "failed to fetch remote file {}: {}",
-                        url, err
+                        "failed to download {url}: {err}"
                     )));
                 }
+            };
+            let status = response.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Err(CacheError::NotFound(url.to_string()));
             }
+            if should_retry_http_status(status) && attempt + 1 < REMOTE_RETRY_ATTEMPTS {
+                std::thread::sleep(remote_retry_delay(attempt));
+                continue;
+            }
+            if !status.is_success() {
+                return Err(CacheError::Fetch(format!(
+                    "failed to download {url}: HTTP {status}"
+                )));
+            }
+            if let Some(length) = response.content_length() {
+                ensure_size_within_limit(length, MAX_COMPRESSED_NAR_SIZE, "compressed FileSize")?;
+            }
+            let mut staged = tempfile::NamedTempFile::new_in(&self.cache_dir)?;
+            let copied =
+                std::io::copy(&mut response.take(MAX_COMPRESSED_NAR_SIZE + 1), &mut staged)?;
+            ensure_size_within_limit(copied, MAX_COMPRESSED_NAR_SIZE, "compressed file size")?;
+            staged
+                .persist(dest)
+                .map_err(|err| CacheError::Io(err.error))?;
+            return Ok(());
         }
-
         Err(CacheError::Fetch(format!(
-            "failed to fetch remote file after {} attempts: {}",
-            REMOTE_RETRY_ATTEMPTS, url
+            "failed to download {url} after {REMOTE_RETRY_ATTEMPTS} attempts"
         )))
     }
 
@@ -673,18 +827,7 @@ impl BinaryCache {
                 return Ok(Some(cached));
             }
 
-            let manifest_path = local_dir.join(format!("{}.json", path.hash()));
-            if manifest_path.exists() {
-                let manifest = fs::read_to_string(&manifest_path)?;
-                let mut cached: CachedPath = serde_json::from_str(&manifest)?;
-                if cached.url.is_none() {
-                    let nar_path = local_dir.join(format!(
-                        "{}{}",
-                        path.hash(),
-                        cached.compression.extension()
-                    ));
-                    cached.url = Some(nar_path.to_string_lossy().to_string());
-                }
+            if let Some(cached) = Self::query_json_manifest(cache, path, local_dir)? {
                 return Ok(Some(cached));
             }
         }
@@ -711,6 +854,40 @@ impl BinaryCache {
         Ok(None)
     }
 
+    fn query_json_manifest(
+        cache: &CacheConfig,
+        path: &StorePath,
+        local_dir: &Path,
+    ) -> Result<Option<CachedPath>, CacheError> {
+        let manifest_path = local_dir.join(format!("{}.json", path.hash()));
+        if !manifest_path.exists() {
+            return Ok(None);
+        }
+        if cache.public_key.is_some() {
+            return Err(CacheError::Signature(format!(
+                "signed cache {} has only unsigned JSON metadata for {}",
+                cache.name,
+                path.display_name()
+            )));
+        }
+        let manifest = fs::read_to_string(&manifest_path)?;
+        let mut cached: CachedPath = serde_json::from_str(&manifest)?;
+        if cached.path != *path {
+            return Err(CacheError::InvalidManifest(format!(
+                "JSON path mismatch: expected '{}', got '{}'",
+                path.display_name(),
+                cached.path.display_name()
+            )));
+        }
+        Self::validate_cached_sizes(&cached)?;
+        if cached.url.is_none() {
+            let nar_path =
+                local_dir.join(format!("{}{}", path.hash(), cached.compression.extension()));
+            cached.url = Some(nar_path.to_string_lossy().to_string());
+        }
+        Ok(Some(cached))
+    }
+
     /// Download and install a cached path.
     /// 下载并安装缓存的路径。
     pub fn fetch(&mut self, cached: &CachedPath) -> Result<(), CacheError> {
@@ -732,9 +909,10 @@ impl BinaryCache {
         }
 
         let result = (|| -> Result<(), CacheError> {
-            // Ensure metadata references are also present in the local store.
-            // 确保元数据引用的路径也存在于本地存储中。
+            self.validate_store_path(&cached.path)?;
+            Self::validate_cached_sizes(cached)?;
             for reference in &cached.references {
+                self.validate_store_path(reference)?;
                 if self.store.path_exists(reference) {
                     self.backfill_existing_path_metadata(reference, visiting, db)?;
                     continue;
@@ -747,28 +925,32 @@ impl BinaryCache {
                         cached.path.display_name()
                     ))
                 })?;
-
                 self.fetch_with_references(&reference_cached, visiting, db)?;
             }
 
-            // Fetch current path after references are present. This prevents
-            // leaving a partially available closure when references are missing.
-            // 在引用就绪后再拉取当前路径，避免缺失引用时留下半可用闭包。
-            if !self.store.path_exists(&cached.path) {
-                let nar_file = self.download_nar(cached)?;
-                self.verify_downloaded_file_hash(cached, &nar_file)?;
-
-                let extracted_nar_hash = self.extract_nar(&nar_file, &cached.path)?;
-                self.verify_extracted_nar_hash(cached, &extracted_nar_hash)?;
-
-                let extracted_path = self.store.to_path(&cached.path);
-                self.verify_store_path_hash_compatibility(&cached.path, &extracted_path)?;
-                self.register_fetched_path_info(db, cached, Some(extracted_nar_hash))?;
-            } else {
-                self.register_fetched_path_info(db, cached, None)?;
+            if self.store.path_exists(&cached.path) {
+                return self.register_fetched_path_info(db, cached, None);
             }
 
-            Ok(())
+            let nar_file = self.download_nar(cached)?;
+            let staged = match self
+                .verify_downloaded_file_hash(cached, &nar_file)
+                .and_then(|()| self.stage_and_verify_nar(cached, &nar_file))
+            {
+                Ok(staged) => staged,
+                Err(original) => {
+                    if let Err(source) = fs::remove_file(&nar_file) {
+                        return Err(CacheError::Cleanup {
+                            path: nar_file,
+                            source,
+                            original: Box::new(original),
+                        });
+                    }
+                    return Err(original);
+                }
+            };
+            self.publish_staged_path(&staged.path, &cached.path)?;
+            self.register_fetched_path_info(db, cached, Some(staged.nar_hash))
         })();
 
         visiting.remove(&cached.path);
@@ -785,21 +967,16 @@ impl BinaryCache {
             return Ok(());
         }
 
+        // An unavailable cache is recoverable only when local scanning supplies
+        // the complete reference set; scanning errors propagate without registering.
         match self.query(path) {
             Ok(Some(cached)) => self.fetch_with_references(&cached, visiting, db),
-            Ok(None) | Err(_) => self.register_minimal_path_info(db, path),
+            Ok(None) | Err(_) => {
+                let info = self.store.scan_path_metadata(path)?;
+                db.register(info)?;
+                Ok(())
+            }
         }
-    }
-
-    fn register_minimal_path_info(
-        &self,
-        db: &mut Database,
-        path: &StorePath,
-    ) -> Result<(), CacheError> {
-        let nar_size = Self::fs_size(&self.store.to_path(path))?;
-        let info = PathInfo::new(path.clone(), *path.hash(), nar_size);
-        db.register(info)?;
-        Ok(())
     }
 
     fn register_fetched_path_info(
@@ -813,46 +990,60 @@ impl BinaryCache {
         } else {
             parse_cache_hash(cached.nar_hash.as_deref())?.unwrap_or(*cached.path.hash())
         };
+        let previous_references = db
+            .query(&cached.path)?
+            .map(|info| info.references)
+            .unwrap_or_default();
 
-        let mut info = PathInfo::new(cached.path.clone(), nar_hash, cached.size);
+        let mut info = self.store.scan_path_metadata(&cached.path)?;
+        info.nar_hash = nar_hash;
+        info.nar_size = cached.size;
         for reference in &cached.references {
             if reference != &cached.path {
                 info.add_reference(reference.clone());
             }
         }
+        for reference in previous_references {
+            info.add_reference(reference);
+        }
         db.register(info)?;
         Ok(())
     }
 
-    fn fs_size(path: &Path) -> Result<u64, std::io::Error> {
-        let metadata = fs::symlink_metadata(path)?;
-        if metadata.is_file() || metadata.file_type().is_symlink() {
-            return Ok(metadata.len());
+    fn validate_cached_sizes(cached: &CachedPath) -> Result<(), CacheError> {
+        ensure_size_within_limit(cached.size, MAX_NAR_SIZE, "NarSize")?;
+        if let Some(file_size) = cached.file_size {
+            ensure_size_within_limit(file_size, MAX_COMPRESSED_NAR_SIZE, "FileSize")?;
         }
-        if !metadata.is_dir() {
-            return Ok(0);
-        }
-
-        let mut total = 0u64;
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            total += Self::fs_size(&entry.path())?;
-        }
-        Ok(total)
+        Ok(())
     }
 
-    /// Verify downloaded compressed NAR hash if metadata provides it.
-    /// 若元数据提供压缩包哈希则校验下载结果。
+    /// Verify the compressed file size and optional hash before decompression.
     fn verify_downloaded_file_hash(
         &self,
         cached: &CachedPath,
         nar_file: &Path,
     ) -> Result<(), CacheError> {
+        let actual_size = fs::metadata(nar_file)?.len();
+        ensure_size_within_limit(actual_size, MAX_COMPRESSED_NAR_SIZE, "compressed file size")?;
+        if let Some(expected_size) = cached.file_size
+            && actual_size != expected_size
+        {
+            return Err(CacheError::InvalidManifest(format!(
+                "compressed FileSize mismatch for {}: expected {}, got {}",
+                cached.path.display_name(),
+                expected_size,
+                actual_size
+            )));
+        }
         let Some(expected) = parse_cache_hash(cached.file_hash.as_deref())? else {
             return Ok(());
         };
-
-        let content = fs::read(nar_file)?;
+        let content = read_bounded_nar(
+            fs::File::open(nar_file)?,
+            MAX_COMPRESSED_NAR_SIZE,
+            "compressed file size",
+        )?;
         let actual = Hash::of(&content);
         if actual != expected {
             return Err(CacheError::HashMismatch {
@@ -861,7 +1052,6 @@ impl BinaryCache {
                 actual: format_hash(&actual),
             });
         }
-
         Ok(())
     }
 
@@ -920,74 +1110,146 @@ impl BinaryCache {
         if !source.exists() {
             return Err(CacheError::NotFound(source.to_string_lossy().to_string()));
         }
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::copy(source, dest)?;
+        ensure_size_within_limit(
+            fs::metadata(source)?.len(),
+            MAX_COMPRESSED_NAR_SIZE,
+            "compressed file size",
+        )?;
+        let mut staged = tempfile::NamedTempFile::new_in(dest.parent().unwrap_or(Path::new(".")))?;
+        let copied = std::io::copy(
+            &mut fs::File::open(source)?.take(MAX_COMPRESSED_NAR_SIZE + 1),
+            &mut staged,
+        )?;
+        ensure_size_within_limit(copied, MAX_COMPRESSED_NAR_SIZE, "compressed file size")?;
+        staged
+            .persist(dest)
+            .map_err(|err| CacheError::Io(err.error))?;
         Ok(())
     }
 
-    /// Extract a NAR archive to the store.
-    /// 将 NAR 归档提取到存储。
-    fn extract_nar(&self, nar_file: &Path, path: &StorePath) -> Result<Hash, CacheError> {
-        let dest = self.store.to_path(path);
-
-        // Create parent directory
-        // 创建父目录
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
+    /// Extract and verify a NAR in a private directory under the store root.
+    fn stage_and_verify_nar(
+        &self,
+        cached: &CachedPath,
+        nar_file: &Path,
+    ) -> Result<StagedPath, CacheError> {
+        let compressed_data = read_bounded_nar(
+            fs::File::open(nar_file)?,
+            MAX_COMPRESSED_NAR_SIZE,
+            "compressed file size",
+        )?;
+        let nar_data = self.decompress_nar(&compressed_data, cached.compression, cached.size)?;
+        let nar_hash = Hash::of(&nar_data);
+        self.verify_extracted_nar_hash(cached, &nar_hash)?;
+        if nar_data.len() as u64 != cached.size {
+            return Err(CacheError::InvalidManifest(format!(
+                "decompressed NAR size mismatch for {}: expected {}, got {}",
+                cached.path.display_name(),
+                cached.size,
+                nar_data.len()
+            )));
         }
 
-        // Read the compressed NAR file
-        // 读取压缩的 NAR 文件
-        let compressed_data = fs::read(nar_file)?;
-
-        // Decompress based on file extension
-        // 根据文件扩展名解压
-        let nar_data = self.decompress_nar(&compressed_data, nar_file)?;
-        let nar_hash = Hash::of(&nar_data);
-
-        // Extract using our NAR implementation
-        // 使用我们的 NAR 实现提取
-        nar::extract_nar(&nar_data, &dest)?;
-
-        Ok(nar_hash)
+        let directory = tempfile::Builder::new()
+            .prefix(".n3v3-substitute-")
+            .tempdir_in(self.store.root())?;
+        let path = directory.path().join("result");
+        nar::extract_nar(&nar_data, &path)?;
+        self.verify_store_path_hash_compatibility(&cached.path, &path)?;
+        Ok(StagedPath {
+            _directory: directory,
+            path,
+            nar_hash,
+        })
     }
 
-    /// Decompress NAR data based on file extension.
-    /// 根据文件扩展名解压 NAR 数据。
-    fn decompress_nar(&self, data: &[u8], path: &Path) -> Result<Vec<u8>, CacheError> {
-        let path_str = path.to_string_lossy();
+    fn publish_staged_path(
+        &self,
+        staged_path: &Path,
+        store_path: &StorePath,
+    ) -> Result<(), CacheError> {
+        let destination = self.store.to_path(store_path);
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        {
+            use nix::fcntl::{RenameFlags, renameat2};
+            match renameat2(
+                None,
+                staged_path,
+                None,
+                &destination,
+                RenameFlags::RENAME_NOREPLACE,
+            ) {
+                Ok(()) => Ok(()),
+                Err(nix::errno::Errno::EEXIST) => Err(CacheError::InvalidManifest(format!(
+                    "store destination already exists: {}",
+                    destination.display()
+                ))),
+                Err(errno) => Err(CacheError::Publish {
+                    path: destination,
+                    source: std::io::Error::from_raw_os_error(errno as i32),
+                }),
+            }
+        }
+        #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+        {
+            let _ = staged_path;
+            Err(CacheError::InvalidManifest(format!(
+                "atomic no-replace publication is unavailable for {} on this platform",
+                destination.display()
+            )))
+        }
+    }
 
-        if path_str.ends_with(".nar") {
-            // No compression
-            // 无压缩
-            Ok(data.to_vec())
-        } else if path_str.ends_with(".nar.gz") {
-            // gzip decompression
-            // gzip 解压
-            let mut decoder = flate2::read::GzDecoder::new(data);
-            let mut decompressed = Vec::new();
-            decoder.read_to_end(&mut decompressed).map_err(|e| {
-                CacheError::Compression(format!("gzip decompression failed: {}", e))
-            })?;
-            Ok(decompressed)
-        } else if path_str.ends_with(".nar.xz") {
-            // xz decompression
-            // xz 解压
-            let mut decompressed = Vec::new();
-            lzma_rs::xz_decompress(&mut std::io::Cursor::new(data), &mut decompressed)
-                .map_err(|e| CacheError::Compression(format!("xz decompression failed: {}", e)))?;
-            Ok(decompressed)
-        } else if path_str.ends_with(".nar.zst") {
-            // zstd decompression
-            // zstd 解压
-            zstd::decode_all(std::io::Cursor::new(data))
-                .map_err(|e| CacheError::Compression(format!("zstd decompression failed: {}", e)))
-        } else {
-            // Assume uncompressed
-            // 假设未压缩
-            Ok(data.to_vec())
+    fn validate_store_path(&self, path: &StorePath) -> Result<(), CacheError> {
+        let name = path.name();
+        if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains('\0') {
+            return Err(CacheError::InvalidManifest(format!(
+                "unsafe store path name: {name:?}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Decompress NAR data with a hard output bound, including for streaming xz.
+    fn decompress_nar(
+        &self,
+        data: &[u8],
+        compression: CompressionFormat,
+        declared_size: u64,
+    ) -> Result<Vec<u8>, CacheError> {
+        let limit = declared_size.min(MAX_NAR_SIZE);
+        match compression {
+            CompressionFormat::None => {
+                ensure_size_within_limit(data.len() as u64, limit, "decompressed NAR size")?;
+                Ok(data.to_vec())
+            }
+            CompressionFormat::Gzip => read_bounded_nar(
+                flate2::read::GzDecoder::new(data),
+                limit,
+                "decompressed NAR size",
+            ),
+            CompressionFormat::Xz => {
+                let mut writer = BoundedNarWriter {
+                    output: Vec::new(),
+                    limit,
+                    is_over_limit: false,
+                };
+                let result = lzma_rs::xz_decompress(&mut std::io::Cursor::new(data), &mut writer);
+                if writer.is_over_limit {
+                    return Err(CacheError::InvalidManifest(format!(
+                        "decompressed NAR size exceeds cache limit {limit}"
+                    )));
+                }
+                result.map_err(|e| {
+                    CacheError::Compression(format!("xz decompression failed: {e}"))
+                })?;
+                Ok(writer.output)
+            }
+            CompressionFormat::Zstd => {
+                let decoder = zstd::Decoder::new(data)
+                    .map_err(|e| CacheError::Compression(format!("zstd decoder failed: {e}")))?;
+                read_bounded_nar(decoder, limit, "decompressed NAR size")
+            }
         }
     }
 
@@ -1112,14 +1374,21 @@ impl BinaryCache {
         // 预先校验哈希格式，尽早拒绝损坏的 narinfo 元数据。
         parse_cache_hash(file_hash.as_deref())?;
         parse_cache_hash(nar_hash.as_deref())?;
+        ensure_size_within_limit(narinfo.file_size, MAX_COMPRESSED_NAR_SIZE, "FileSize")?;
+        ensure_size_within_limit(
+            narinfo.nar_size.unwrap_or(narinfo.file_size),
+            MAX_NAR_SIZE,
+            "NarSize",
+        )?;
 
-        let resolved_url = resolve_narinfo_url(&narinfo.url, source);
+        let resolved_url = resolve_narinfo_url(&narinfo.url, source)?;
 
         Ok(CachedPath {
             path: narinfo.store_path.clone(),
             derivation: placeholder_derivation(&narinfo.store_path.display_name()),
             references: narinfo.references.clone(),
             size: narinfo.nar_size.unwrap_or(narinfo.file_size),
+            file_size: Some(narinfo.file_size),
             compression: narinfo.compression,
             url: Some(resolved_url),
             file_hash,
@@ -1187,6 +1456,7 @@ impl BinaryCache {
             derivation: placeholder_derivation(&path.to_string()),
             references: references.clone(),
             size: nar_size,
+            file_size: Some(file_size),
             compression: CompressionFormat::Xz,
             url: None,
             file_hash: Some(format_hash(&file_hash)),
@@ -1588,6 +1858,8 @@ mod tests {
         fail_puts: Arc<Mutex<HashMap<String, usize>>>,
         fail_gets: Arc<Mutex<HashMap<String, usize>>>,
         request_counts: Arc<Mutex<HashMap<String, usize>>>,
+        redirects: Arc<Mutex<HashMap<String, String>>>,
+        no_length: Arc<Mutex<HashSet<String>>>,
         stop: Arc<AtomicBool>,
         handle: Option<JoinHandle<()>>,
     }
@@ -1602,12 +1874,16 @@ mod tests {
             let fail_puts = Arc::new(Mutex::new(HashMap::new()));
             let fail_gets = Arc::new(Mutex::new(HashMap::new()));
             let request_counts = Arc::new(Mutex::new(HashMap::new()));
+            let redirects = Arc::new(Mutex::new(HashMap::new()));
+            let no_length = Arc::new(Mutex::new(HashSet::new()));
             let stop = Arc::new(AtomicBool::new(false));
 
             let storage_worker = Arc::clone(&storage);
             let fail_puts_worker = Arc::clone(&fail_puts);
             let fail_gets_worker = Arc::clone(&fail_gets);
             let request_counts_worker = Arc::clone(&request_counts);
+            let redirects_worker = Arc::clone(&redirects);
+            let no_length_worker = Arc::clone(&no_length);
             let stop_worker = Arc::clone(&stop);
             let handle = thread::spawn(move || {
                 while !stop_worker.load(Ordering::Relaxed) {
@@ -1619,6 +1895,8 @@ mod tests {
                                 &fail_puts_worker,
                                 &fail_gets_worker,
                                 &request_counts_worker,
+                                &redirects_worker,
+                                &no_length_worker,
                             );
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -1635,6 +1913,8 @@ mod tests {
                 fail_puts,
                 fail_gets,
                 request_counts,
+                redirects,
+                no_length,
                 stop,
                 handle: Some(handle),
             }
@@ -1677,6 +1957,20 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(path.to_string(), content.to_vec());
+        }
+
+        fn redirect_path(&self, path: &str, location: &str) {
+            self.redirects
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(path.to_string(), location.to_string());
+        }
+
+        fn serve_without_length(&self, path: &str) {
+            self.no_length
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(path.to_string());
         }
     }
 
@@ -1731,6 +2025,8 @@ mod tests {
         fail_puts: &Arc<Mutex<HashMap<String, usize>>>,
         fail_gets: &Arc<Mutex<HashMap<String, usize>>>,
         request_counts: &Arc<Mutex<HashMap<String, usize>>>,
+        redirects: &Arc<Mutex<HashMap<String, String>>>,
+        no_length: &Arc<Mutex<HashSet<String>>>,
     ) -> std::io::Result<()> {
         // The listener is non-blocking and accepted streams inherit that mode,
         // so a request body that arrives in several segments would make `read`
@@ -1820,6 +2116,16 @@ mod tests {
                         b"retry later",
                     );
                 }
+                if let Some(location) = redirects
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .get(path)
+                {
+                    let headers = format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    return stream.write_all(headers.as_bytes());
+                }
                 let payload = storage
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1832,7 +2138,16 @@ mod tests {
                         } else {
                             "application/octet-stream"
                         };
-                        write_http_response(stream, "200 OK", content_type, &payload)
+                        if no_length
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .contains(path)
+                        {
+                            stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")?;
+                            stream.write_all(&payload)
+                        } else {
+                            write_http_response(stream, "200 OK", content_type, &payload)
+                        }
                     }
                     None => write_http_response(stream, "404 Not Found", "text/plain", b"missing"),
                 }
@@ -1918,6 +2233,7 @@ mod tests {
 
         assert_eq!(parsed.url.as_deref(), Some(expected.as_str()));
         assert_eq!(parsed.size, 100);
+        assert_eq!(parsed.file_size, Some(42));
         assert_eq!(parsed.compression, CompressionFormat::Xz);
     }
 
@@ -1970,6 +2286,112 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, CacheError::InvalidManifest(_)));
+    }
+
+    #[test]
+    fn query_signed_cache_with_only_json_rejects_unsigned_downgrade() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let local = temp.path().join("cache");
+        fs::create_dir(&local).unwrap();
+        let path = StorePath::new(Hash::of(b"signed-json"), "package".to_string());
+        fs::write(local.join(format!("{}.json", path.hash())), b"{}").unwrap();
+        let mut cache =
+            BinaryCache::new(Store::open_at(temp.path().join("store")).unwrap()).unwrap();
+        cache.add_cache(CacheConfig {
+            local_dir: Some(local),
+            public_key: Some(cache_public_key(&deterministic_signing_key(17))),
+            ..Default::default()
+        });
+        assert!(matches!(cache.query(&path), Err(CacheError::Signature(_))));
+    }
+
+    #[test]
+    fn query_json_with_different_requested_path_rejects_manifest() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let local = temp.path().join("cache");
+        fs::create_dir(&local).unwrap();
+        let requested = StorePath::new(Hash::of(b"requested"), "package".to_string());
+        let other = StorePath::new(Hash::of(b"other"), "package".to_string());
+        let cached = CachedPath {
+            path: other,
+            derivation: placeholder_derivation("package"),
+            references: Vec::new(),
+            size: 0,
+            file_size: None,
+            compression: CompressionFormat::None,
+            url: None,
+            file_hash: None,
+            nar_hash: None,
+        };
+        fs::write(
+            local.join(format!("{}.json", requested.hash())),
+            serde_json::to_vec(&cached).unwrap(),
+        )
+        .unwrap();
+        let mut cache =
+            BinaryCache::new(Store::open_at(temp.path().join("store")).unwrap()).unwrap();
+        cache.add_cache(CacheConfig {
+            local_dir: Some(local),
+            ..Default::default()
+        });
+        assert!(
+            matches!(cache.query(&requested), Err(CacheError::InvalidManifest(message)) if message.contains("JSON path mismatch"))
+        );
+    }
+
+    #[test]
+    fn query_legacy_json_without_file_size_keeps_local_cache_compatible() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let local = temp.path().join("cache");
+        fs::create_dir(&local).unwrap();
+        let path = StorePath::new(Hash::of(b"legacy"), "package".to_string());
+        let metadata = CachedPath {
+            path: path.clone(),
+            derivation: placeholder_derivation("package"),
+            references: Vec::new(),
+            size: 12,
+            file_size: None,
+            compression: CompressionFormat::None,
+            url: None,
+            file_hash: None,
+            nar_hash: None,
+        };
+        let mut json = serde_json::to_value(&metadata).unwrap();
+        json.as_object_mut().unwrap().remove("file_size");
+        fs::write(
+            local.join(format!("{}.json", path.hash())),
+            serde_json::to_vec(&json).unwrap(),
+        )
+        .unwrap();
+        let mut cache =
+            BinaryCache::new(Store::open_at(temp.path().join("store")).unwrap()).unwrap();
+        cache.add_cache(CacheConfig {
+            local_dir: Some(local),
+            ..Default::default()
+        });
+        let queried = cache.query(&path).unwrap().unwrap();
+        assert_eq!(queried.path, path);
+        assert_eq!(queried.file_size, None);
+    }
+
+    #[test]
+    fn parse_narinfo_oversized_declared_sizes_reject_before_download() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let cache = BinaryCache::new(Store::open_at(temp.path().join("store")).unwrap()).unwrap();
+        let path = StorePath::new(Hash::of(b"oversize"), "package".to_string());
+        for (file_size, nar_size, rejected_field) in [
+            (MAX_COMPRESSED_NAR_SIZE + 1, 1, "FileSize"),
+            (1, MAX_NAR_SIZE + 1, "NarSize"),
+        ] {
+            let content = format!(
+                "StorePath: {}\nURL: archive.nar.xz\nFileSize: {file_size}\nNarSize: {nar_size}\n",
+                path.display_name()
+            );
+            assert!(matches!(
+                cache.parse_narinfo(&content, &path, NarInfoSource::Remote("https://cache.example"), None),
+                Err(CacheError::InvalidManifest(message)) if message.contains(rejected_field)
+            ));
+        }
     }
 
     #[test]
@@ -2371,13 +2793,22 @@ mod tests {
         let dependency = store
             .add_content(b"dependency-existing", "dep-1.0")
             .unwrap();
-        let root = store.add_content(b"root-existing", "root-1.0").unwrap();
+        let embedded = store
+            .add_content(b"embedded-existing", "embedded-1.0")
+            .unwrap();
+        let root = store
+            .add_content(
+                store.to_path(&embedded).to_string_lossy().as_bytes(),
+                "root-1.0",
+            )
+            .unwrap();
 
         let cached = CachedPath {
             path: root.clone(),
             derivation: placeholder_derivation("root-1.0"),
             references: vec![dependency.clone()],
             size: 777,
+            file_size: None,
             compression: CompressionFormat::Xz,
             url: None,
             file_hash: None,
@@ -2386,6 +2817,9 @@ mod tests {
 
         let mut cache = BinaryCache::new(Store::open_at(store_root.clone()).unwrap()).unwrap();
         cache.fetch(&cached).unwrap();
+        let mut reduced = cached.clone();
+        reduced.references.clear();
+        cache.fetch(&reduced).unwrap();
 
         let mut db = Database::open(store_root).unwrap();
         let info = db
@@ -2395,6 +2829,7 @@ mod tests {
         assert_eq!(info.nar_hash, *root.hash());
         assert_eq!(info.nar_size, 777);
         assert!(info.references.contains(&dependency));
+        assert!(info.references.contains(&embedded));
 
         let dep_info = db
             .query(&dependency)
@@ -2424,6 +2859,7 @@ mod tests {
             derivation: placeholder_derivation("root-1.0"),
             references: vec![dependency.clone()],
             size: 777,
+            file_size: None,
             compression: CompressionFormat::Xz,
             url: None,
             file_hash: None,
@@ -2445,6 +2881,54 @@ mod tests {
             .expect("dependency metadata should still be backfilled");
         assert_eq!(dep_info.nar_hash, *dependency.hash());
         assert!(dep_info.references.is_empty());
+    }
+
+    #[test]
+    fn fetch_existing_reference_without_metadata_retains_transitive_dependency() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_root = temp.path().join("store");
+        let store = Store::open_at(store_root.clone()).unwrap();
+        let third = store.add_content(b"third", "third").unwrap();
+        let second = store
+            .add_content(store.to_path(&third).to_string_lossy().as_bytes(), "second")
+            .unwrap();
+        let first = store.add_content(b"first", "first").unwrap();
+        let garbage = store.add_content(b"garbage", "garbage").unwrap();
+        let database = Database::open(store_root.clone()).unwrap();
+        fs::remove_file(database.info_path(&second)).unwrap();
+
+        let cached = CachedPath {
+            path: first.clone(),
+            derivation: placeholder_derivation("first"),
+            references: vec![second.clone()],
+            size: 5,
+            file_size: None,
+            compression: CompressionFormat::Xz,
+            url: None,
+            file_hash: None,
+            nar_hash: None,
+        };
+        let mut cache = BinaryCache::new(store).unwrap();
+        cache.fetch(&cached).unwrap();
+        let mut store = Store::open_at(store_root.clone()).unwrap();
+        let mut database = Database::open(store_root).unwrap();
+        assert!(
+            database
+                .query(&second)
+                .unwrap()
+                .unwrap()
+                .references
+                .contains(&third)
+        );
+        {
+            let gc = crate::GarbageCollector::new(&mut store);
+            gc.add_root("first", &first).unwrap();
+        }
+        let result = crate::GarbageCollector::new(&mut store).collect().unwrap();
+        assert_eq!(result.deleted, 1);
+        assert!(store.path_exists(&second));
+        assert!(store.path_exists(&third));
+        assert!(!store.path_exists(&garbage));
     }
 
     #[test]
@@ -2576,6 +3060,158 @@ mod tests {
 
         assert!(cache.query(&store_path).unwrap().is_none());
         assert_eq!(server.request_count("GET", &narinfo_path), 1);
+    }
+
+    #[test]
+    fn remote_narinfo_disallowed_urls_rejected_before_payload_request() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let server = TestHttpCacheServer::start();
+        let victim = TestHttpCacheServer::start();
+        let local_nar = temp.path().join("private.nar");
+        fs::write(&local_nar, b"private").unwrap();
+        let path = StorePath::new(Hash::of(b"untrusted-nar-url"), "pkg".to_string());
+        let narinfo_path = format!("/{}.narinfo", path.hash());
+        let mut cache =
+            BinaryCache::new(Store::open_at(temp.path().join("store")).unwrap()).unwrap();
+        cache.add_cache(CacheConfig {
+            url: Some(server.base_url.clone()),
+            ..Default::default()
+        });
+        for bad_url in [
+            format!("file://{}", local_nar.display()),
+            local_nar.display().to_string(),
+            format!("{}/payload.nar", victim.base_url),
+            format!(
+                "//{}/payload.nar",
+                victim.base_url.trim_start_matches("http://")
+            ),
+        ] {
+            let mut narinfo = unsigned_narinfo(&path);
+            narinfo.url = bad_url.clone();
+            server.write_path(&narinfo_path, narinfo.to_text().as_bytes());
+            let err = cache.query(&path).unwrap_err();
+            assert!(
+                matches!(&err, CacheError::InvalidManifest(message)
+                    if message.contains(&bad_url) && message.contains(&server.base_url)),
+                "{err}"
+            );
+        }
+        assert_eq!(victim.request_count("GET", "/payload.nar"), 0);
+        assert!(
+            !cache
+                .cache_dir
+                .join(format!("{}.nar.xz", path.hash()))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn remote_narinfo_oversized_response_rejected_with_and_without_length() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let server = TestHttpCacheServer::start();
+        let path = StorePath::new(Hash::of(b"oversized-narinfo"), "pkg".to_string());
+        let narinfo_path = format!("/{}.narinfo", path.hash());
+        let mut cache =
+            BinaryCache::new(Store::open_at(temp.path().join("store")).unwrap()).unwrap();
+        cache.add_cache(CacheConfig {
+            url: Some(server.base_url.clone()),
+            ..Default::default()
+        });
+        let oversized = vec![b'#'; MAX_NARINFO_SIZE as usize + 1];
+        server.write_path(&narinfo_path, &oversized);
+        let err = cache.query(&path).unwrap_err();
+        assert!(matches!(err, CacheError::InvalidManifest(message)
+            if message.contains("narinfo size") && message.contains(&narinfo_path)));
+
+        server.serve_without_length(&narinfo_path);
+        let err = cache.query(&path).unwrap_err();
+        assert!(matches!(err, CacheError::InvalidManifest(message)
+            if message.contains("narinfo size") && message.contains(&narinfo_path)));
+
+        let mut boundary = unsigned_narinfo(&path).to_text().into_bytes();
+        boundary.resize(MAX_NARINFO_SIZE as usize, b' ');
+        server.write_path(&narinfo_path, &boundary);
+        assert!(cache.query(&path).unwrap().is_some());
+    }
+
+    #[test]
+    fn remote_narinfo_cross_origin_redirect_rejected_before_following() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let server = TestHttpCacheServer::start();
+        let victim = TestHttpCacheServer::start();
+        let path = StorePath::new(Hash::of(b"redirect-narinfo"), "pkg".to_string());
+        let narinfo_path = format!("/{}.narinfo", path.hash());
+        server.redirect_path(&narinfo_path, &format!("{}{narinfo_path}", victim.base_url));
+        let mut cache =
+            BinaryCache::new(Store::open_at(temp.path().join("store")).unwrap()).unwrap();
+        cache.add_cache(CacheConfig {
+            url: Some(server.base_url.clone()),
+            ..Default::default()
+        });
+        let err = cache.query(&path).unwrap_err();
+        assert!(matches!(err, CacheError::Fetch(message)
+            if message.contains(&narinfo_path) && message.contains("redirect")));
+        assert_eq!(server.request_count("GET", &narinfo_path), 1);
+        assert_eq!(victim.request_count("GET", &narinfo_path), 0);
+    }
+
+    #[test]
+    fn remote_nar_cross_origin_redirect_rejected_before_following() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let server = TestHttpCacheServer::start();
+        let victim = TestHttpCacheServer::start();
+        let path = StorePath::new(Hash::of(b"redirect-nar"), "pkg".to_string());
+        let narinfo_path = format!("/{}.narinfo", path.hash());
+        let nar_path = format!("/{}.nar.xz", path.hash());
+        server.write_path(&narinfo_path, unsigned_narinfo(&path).to_text().as_bytes());
+        server.redirect_path(&nar_path, &format!("{}{nar_path}", victim.base_url));
+        let mut cache =
+            BinaryCache::new(Store::open_at(temp.path().join("store")).unwrap()).unwrap();
+        cache.add_cache(CacheConfig {
+            url: Some(server.base_url.clone()),
+            ..Default::default()
+        });
+        let cached = cache.query(&path).unwrap().unwrap();
+        let err = cache.fetch(&cached).unwrap_err();
+        assert!(matches!(err, CacheError::Fetch(message)
+            if message.contains(&nar_path) && message.contains("redirect")));
+        assert_eq!(server.request_count("GET", &nar_path), 1);
+        assert_eq!(victim.request_count("GET", &nar_path), 0);
+    }
+
+    #[test]
+    fn remote_nar_same_origin_redirect_preserves_verified_download() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let server = TestHttpCacheServer::start();
+        let source = Store::open_at(temp.path().join("source")).unwrap();
+        let path = source.add_content(b"same-origin-redirect", "pkg").unwrap();
+        let mut upload_cache = BinaryCache::new(source).unwrap();
+        upload_cache.add_cache(CacheConfig {
+            url: Some(server.base_url.clone()),
+            upload: true,
+            ..Default::default()
+        });
+        upload_cache.push(&path).unwrap();
+
+        let nar_path = format!("/{}.nar.xz", path.hash());
+        let redirected_path = "/redirected.nar.xz";
+        let nar_bytes = server.read_path(&nar_path).unwrap();
+        server.write_path(redirected_path, &nar_bytes);
+        server.redirect_path(&nar_path, redirected_path);
+        let fetch_store = Store::open_at(temp.path().join("fetch")).unwrap();
+        let mut fetch_cache = BinaryCache::new(fetch_store).unwrap();
+        fetch_cache.add_cache(CacheConfig {
+            url: Some(server.base_url.clone()),
+            ..Default::default()
+        });
+        let cached = fetch_cache.query(&path).unwrap().unwrap();
+        fetch_cache.fetch(&cached).unwrap();
+        assert_eq!(
+            fs::read(fetch_cache.store.to_path(&path)).unwrap(),
+            b"same-origin-redirect"
+        );
+        assert_eq!(server.request_count("GET", &nar_path), 1);
+        assert_eq!(server.request_count("GET", redirected_path), 1);
     }
 
     #[test]
@@ -2894,6 +3530,7 @@ mod tests {
             derivation: placeholder_derivation("pkg-1.0"),
             references: Vec::new(),
             size: nar_data.len() as u64,
+            file_size: None,
             compression: CompressionFormat::Xz,
             url: Some(nar_file.to_string_lossy().to_string()),
             file_hash: Some(format_hash(&Hash::of(b"wrong-file-hash"))),
@@ -2931,6 +3568,7 @@ mod tests {
             derivation: placeholder_derivation("pkg-1.0"),
             references: Vec::new(),
             size: nar_data.len() as u64,
+            file_size: None,
             compression: CompressionFormat::Xz,
             url: Some(nar_file.to_string_lossy().to_string()),
             file_hash: Some(format_hash(&Hash::of(&compressed))),
@@ -2964,6 +3602,7 @@ mod tests {
             derivation: placeholder_derivation("pkg-1.0"),
             references: Vec::new(),
             size: nar_data.len() as u64,
+            file_size: None,
             compression: CompressionFormat::Xz,
             url: Some(nar_file.to_string_lossy().to_string()),
             file_hash: Some(format_hash(&Hash::of(&compressed))),
@@ -2975,8 +3614,196 @@ mod tests {
             err,
             CacheError::Store(StoreError::HashMismatch { .. })
         ));
-
+        assert!(!cache.store.path_exists(&wrong_store_path));
+        assert!(fs::read_dir(&store_root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".n3v3-substitute-")
+        }));
         let mut db = Database::open(store_root).unwrap();
         assert!(db.query(&wrong_store_path).unwrap().is_none());
+    }
+
+    #[test]
+    fn fetch_malformed_nar_cleans_staging_and_leaves_final_absent() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store_root = temp.path().join("store");
+        let store = Store::open_at(store_root.clone()).unwrap();
+        let mut cache = BinaryCache::new(store).unwrap();
+        let nar_data = b"malformed NAR data";
+        let nar_hash = Hash::of(nar_data);
+        let mut compressed = Vec::new();
+        lzma_rs::xz_compress(&mut std::io::Cursor::new(nar_data), &mut compressed).unwrap();
+        let nar_file = temp.path().join("malformed.nar.xz");
+        fs::write(&nar_file, &compressed).unwrap();
+        let cached = CachedPath {
+            path: StorePath::new(nar_hash, "malformed-1.0".to_string()),
+            derivation: placeholder_derivation("malformed-1.0"),
+            references: Vec::new(),
+            size: nar_data.len() as u64,
+            file_size: None,
+            compression: CompressionFormat::Xz,
+            url: Some(nar_file.to_string_lossy().to_string()),
+            file_hash: Some(format_hash(&Hash::of(&compressed))),
+            nar_hash: Some(format_hash(&nar_hash)),
+        };
+
+        assert!(matches!(cache.fetch(&cached), Err(CacheError::Nar(_))));
+        assert!(!cache.store.path_exists(&cached.path));
+        assert!(fs::read_dir(store_root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".n3v3-substitute-")
+        }));
+    }
+
+    #[test]
+    fn fetch_unsafe_store_name_rejects_before_writing_outside_store() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store_root = temp.path().join("store");
+        let store = Store::open_at(store_root).unwrap();
+        let mut cache = BinaryCache::new(store).unwrap();
+        let unsafe_path = StorePath::new(Hash::of(b"unsafe"), "pkg/../../escaped".to_string());
+        let cached = CachedPath {
+            path: unsafe_path,
+            derivation: placeholder_derivation("unsafe"),
+            references: Vec::new(),
+            size: 0,
+            file_size: None,
+            compression: CompressionFormat::None,
+            url: None,
+            file_hash: None,
+            nar_hash: None,
+        };
+
+        assert!(matches!(
+            cache.fetch(&cached),
+            Err(CacheError::InvalidManifest(message)) if message.contains("unsafe store path")
+        ));
+        assert!(!temp.path().join("escaped").exists());
+    }
+    #[test]
+    fn fetch_compressed_size_mismatch_discards_bad_copy_and_allows_retry() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        fs::write(&source, b"retry payload").unwrap();
+        let nar_data = nar::create_nar(&source).unwrap();
+        let mut compressed = Vec::new();
+        lzma_rs::xz_compress(&mut std::io::Cursor::new(&nar_data), &mut compressed).unwrap();
+        let archive = temp.path().join("archive.nar.xz");
+        fs::write(&archive, b"bad").unwrap();
+        let path = StorePath::new(nar::hash_path(&source).unwrap(), "package".to_string());
+        let store = Store::open_at(temp.path().join("store")).unwrap();
+        let mut cache = BinaryCache::new(store).unwrap();
+        let cached = CachedPath {
+            path: path.clone(),
+            derivation: placeholder_derivation("package"),
+            references: Vec::new(),
+            size: nar_data.len() as u64,
+            file_size: Some(compressed.len() as u64),
+            compression: CompressionFormat::Xz,
+            url: Some(archive.to_string_lossy().to_string()),
+            file_hash: Some(format_hash(&Hash::of(&compressed))),
+            nar_hash: Some(format_hash(&Hash::of(&nar_data))),
+        };
+        assert!(matches!(
+            cache.fetch(&cached),
+            Err(CacheError::InvalidManifest(message)) if message.contains("FileSize mismatch")
+        ));
+        assert!(
+            !cache
+                .cache_dir
+                .join(format!("{}.nar.xz", path.hash()))
+                .exists()
+        );
+        fs::write(&archive, compressed).unwrap();
+        cache.fetch(&cached).unwrap();
+        assert_eq!(
+            fs::read(cache.store.to_path(&path)).unwrap(),
+            b"retry payload"
+        );
+    }
+
+    #[test]
+    fn fetch_oversized_compressed_input_rejects_before_copying() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let archive = temp.path().join("oversized.nar");
+        fs::File::create(&archive)
+            .unwrap()
+            .set_len(MAX_COMPRESSED_NAR_SIZE + 1)
+            .unwrap();
+        let path = StorePath::new(Hash::of(b"oversized-compressed"), "package".to_string());
+        let store = Store::open_at(temp.path().join("store")).unwrap();
+        let mut cache = BinaryCache::new(store).unwrap();
+        let cached = CachedPath {
+            path: path.clone(),
+            derivation: placeholder_derivation("package"),
+            references: Vec::new(),
+            size: 1,
+            file_size: None,
+            compression: CompressionFormat::None,
+            url: Some(archive.to_string_lossy().to_string()),
+            file_hash: None,
+            nar_hash: None,
+        };
+        assert!(matches!(
+            cache.fetch(&cached),
+            Err(CacheError::InvalidManifest(message)) if message.contains("compressed file size")
+        ));
+        assert!(
+            !cache
+                .cache_dir
+                .join(format!("{}.nar", path.hash()))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn decompress_over_limit_fails_before_unbounded_output_growth() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let cache = BinaryCache::new(Store::open_at(temp.path().join("store")).unwrap()).unwrap();
+        let oversized = vec![b'A'; 256 * 1024];
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gzip.write_all(&oversized).unwrap();
+        let mut xz = Vec::new();
+        lzma_rs::xz_compress(&mut std::io::Cursor::new(&oversized), &mut xz).unwrap();
+        let zstd = zstd::encode_all(std::io::Cursor::new(&oversized), 0).unwrap();
+        for (format, archive) in [
+            (CompressionFormat::Gzip, gzip.finish().unwrap()),
+            (CompressionFormat::Xz, xz),
+            (CompressionFormat::Zstd, zstd),
+        ] {
+            assert!(
+                matches!(
+                    cache.decompress_nar(&archive, format, 128),
+                    Err(CacheError::InvalidManifest(message)) if message.contains("decompressed NAR size")
+                ),
+                "decode must fail on the declared output bound for {format:?}"
+            );
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn publish_when_destination_appears_does_not_replace_existing_directory() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let cache = BinaryCache::new(Store::open_at(temp.path().join("store")).unwrap()).unwrap();
+        let path = StorePath::new(Hash::of(b"publish"), "package".to_string());
+        let staged = temp.path().join("staged");
+        fs::create_dir(&staged).unwrap();
+        fs::write(staged.join("result"), b"verified").unwrap();
+        let destination = cache.store.to_path(&path);
+        fs::create_dir(&destination).unwrap();
+        assert!(matches!(
+            cache.publish_staged_path(&staged, &path),
+            Err(CacheError::InvalidManifest(message)) if message.contains("already exists")
+        ));
+        assert!(staged.join("result").exists());
+        assert!(destination.is_dir());
+        assert!(!destination.join("result").exists());
     }
 }

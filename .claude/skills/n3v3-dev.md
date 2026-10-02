@@ -62,6 +62,21 @@ resolution table. Resolved trait methods are checked by their method identity;
 unresolved targets retain builtin fallback checking, and index operands,
 guards, comprehension conditions, lambdas, and interpolations are traversed.
 
+System-facing durability boundaries are separate from the language pipeline.
+Configuration generations publish immutable, hashed activation snapshots before
+moving `current`; failed activation restores the prior pointer, rollback selects
+the nearest retained earlier generation, and `N3V3_CONFIG_DRY_RUN` previews
+without changing `current` or `active`. Activation is root-confined,
+transactional, preserves the ownership of replaced files, and rejects generated
+shell scripts. Package profiles publish validated immutable generations. Direct
+store additions reject empty or multi-component names, register `PathInfo`, and
+record discovered store references; GC retains all profile generations,
+recursively follows those references, and aborts before deletion if any reachable
+ordinary store path lacks metadata. NAR/cache inputs
+are untrusted until bounded extraction and declared size/hash verification
+complete. The loopback-only built-in registry requires `N3V3_REGISTRY_TOKEN` for
+publish requests; reads remain anonymous and public service still needs a gateway.
+
 ## Build Commands
 
 cargo build -p n3v3         # CLI binary (CI target)

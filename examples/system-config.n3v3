@@ -6,66 +6,30 @@
 --   n3v3 config build    — build the system configuration
 --   n3v3 config switch   — activate the configuration
 --   n3v3 config list     — list configuration generations
-
 -- Flake inputs (declared in flake.n3v3):
 -- inputs = #{
 --   nevepkgs = #{ url = "github:neve-lang/nevepkgs" }
 -- };
-
 -- System configuration outputs
 -- In a real flake, `inputs` is resolved from the lock file.
 -- 在实际 flake 中，`inputs` 从锁定文件中解析。
-let outputs = fn(inputs) {
-    -- `inputs.nevepkgs` provides packages at resolution time.
-    -- 在解析时，`inputs.nevepkgs` 提供软件包。
-    -- e.g., packages = [inputs.nevepkgs.git, inputs.nevepkgs.curl]
-
-    let system = #{
-        -- Host configuration
-        hostname = "n3v3-server",
-        timezone = "Asia/Shanghai",
-        locale = "en_US.UTF-8",
-
-        -- Packages to install (resolved at build time)
-        packages = [
-            "nevepkgs.git",
-            "nevepkgs.curl",
-            "nevepkgs.n3v3",
-        ],
-
-        -- Services
-        services = #{
-            sshd = #{ enable = true },
-            nginx = #{
-                enable = true,
-                virtualHosts = #{
-                    example_com = #{
-                        root = "/var/www/example.com",
-                    },
-                },
-            },
-        },
-
-        -- Users
-        users = #{
-            admin = #{
-                isAdmin = true,
-                home = "/home/admin",
-                shell = "/bin/bash",
-            },
-        },
-
-        -- Firewall
-        firewall = #{
-            enable = true,
-            allowedTCPPorts = [22, 80, 443],
-        },
-    };
-
-    #{
-        system = system,
-        checks = #{
-            minimal = fn() { true },
-        },
-    }
-};
+outputs = |inputs| {
+  let system = { hostname = "n3v3-server", timezone = "Asia/Shanghai", locale = "en_US.UTF-8", packages = ["nevepkgs.git", "nevepkgs.curl", "nevepkgs.n3v3"], services = {
+    sshd = { enable = true },
+    nginx = { enable = true, virtualHosts = { example_com = { root = "/var/www/example.com" } } }
+  }, users = { admin = { isAdmin = true, home = "/home/admin", shell = "/bin/bash" } }, firewall = {
+    enable = true,
+    allowedTCPPorts = [22, 80, 443]
+  } };
+  { system = system, checks = { minimal = fn() {
+    true
+  } } }
+}
+-- `inputs.nevepkgs` provides packages at resolution time.
+-- 在解析时，`inputs.nevepkgs` 提供软件包。
+-- e.g., packages = [inputs.nevepkgs.git, inputs.nevepkgs.curl]
+-- Host configuration
+-- Packages to install (resolved at build time)
+-- Services
+-- Users
+-- Firewall

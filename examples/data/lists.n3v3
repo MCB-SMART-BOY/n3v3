@@ -40,4 +40,4 @@ first = |xs| {
   }
 }
 
-println(first([10, 20, 30]));
+println(first([10, 20, 30]))

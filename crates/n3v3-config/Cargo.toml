@@ -17,6 +17,7 @@ n3v3-fetch = { version = "5.0.0", path = "../n3v3-fetch" }
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

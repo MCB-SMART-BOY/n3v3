@@ -1,12 +1,13 @@
 //! Store operations.
 //! 存储操作。
 
+use crate::db::{Database, PathInfo};
 use crate::path::store_dir;
 use n3v3_derive::{Derivation, Hash, StorePath};
-use std::collections::HashMap;
-use std::fs;
+use std::collections::{HashMap, HashSet};
+use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
 /// Errors that can occur during store operations.
@@ -47,6 +48,53 @@ pub struct Store {
     derivation_cache: HashMap<StorePath, Derivation>,
 }
 
+/// OS-released store lock; holding this guard excludes profile publication and GC.
+pub struct ProfileGcLock {
+    _file: File,
+}
+
+const PROFILE_REGISTRY: &str = ".profiles";
+const PROFILE_GC_LOCK: &str = ".profile-gc.lock";
+const MAX_PROFILE_PATH_BYTES: u64 = 4096;
+
+pub(crate) fn validate_profile_path(path: &Path) -> Result<(), StoreError> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
+        || path.file_name().is_none_or(|name| name != "profile")
+        || path
+            .parent()
+            .and_then(Path::file_name)
+            .is_none_or(|name| name != ".n3v3")
+    {
+        return Err(StoreError::InvalidPath(format!(
+            "Invalid profile root '{}'",
+            path.display()
+        )));
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        StoreError::InvalidPath(format!(
+            "Failed to inspect profile root '{}': {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.file_type().is_dir() || fs::canonicalize(path)?.as_path() != path {
+        return Err(StoreError::InvalidPath(format!(
+            "Profile root '{}' must be a real directory with no symlink ancestors",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn profile_registry_name(path: &Path) -> Result<String, StoreError> {
+    let path = path.to_str().ok_or_else(|| {
+        StoreError::InvalidPath(format!("Non-UTF-8 profile root '{}'", path.display()))
+    })?;
+    Ok(Hash::of(path.as_bytes()).to_string())
+}
+
 impl Store {
     /// Open the store at the default location.
     /// 在默认位置打开存储。
@@ -73,6 +121,146 @@ impl Store {
         &self.root
     }
 
+    /// Acquire the shared, cross-process profile/GC lock for this store.
+    pub fn lock_profiles(&self) -> Result<ProfileGcLock, StoreError> {
+        let root = fs::canonicalize(&self.root).map_err(|error| {
+            StoreError::InvalidPath(format!(
+                "Failed to resolve store '{}': {error}",
+                self.root.display()
+            ))
+        })?;
+        let path = root.join(PROFILE_GC_LOCK);
+        if let Ok(metadata) = fs::symlink_metadata(&path)
+            && !metadata.file_type().is_file()
+        {
+            return Err(StoreError::InvalidPath(format!(
+                "Store lock '{}' is not a regular file",
+                path.display()
+            )));
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|error| {
+                StoreError::InvalidPath(format!(
+                    "Failed to open store lock '{}': {error}",
+                    path.display()
+                ))
+            })?;
+        file.lock().map_err(|error| {
+            StoreError::InvalidPath(format!(
+                "Failed to lock store '{}': {error}",
+                root.display()
+            ))
+        })?;
+        Ok(ProfileGcLock { _file: file })
+    }
+
+    /// Register a published profile. Caller must hold `lock_profiles()` until
+    /// the generation and current pointer have been published.
+    pub fn register_profile(&self, profile: &Path) -> Result<(), StoreError> {
+        validate_profile_path(profile)?;
+        self.profile_dirs()?;
+        let registry = self.root.join(PROFILE_REGISTRY);
+        fs::create_dir_all(&registry).map_err(|error| {
+            StoreError::InvalidPath(format!(
+                "Failed to create profile registry '{}': {error}",
+                registry.display()
+            ))
+        })?;
+        let entry = registry.join(profile_registry_name(profile)?);
+        let content = profile.to_str().ok_or_else(|| {
+            StoreError::InvalidPath(format!("Non-UTF-8 profile root '{}'", profile.display()))
+        })?;
+        if content.len() as u64 > MAX_PROFILE_PATH_BYTES {
+            return Err(StoreError::InvalidPath(format!(
+                "Profile root '{}' is too long to register",
+                profile.display()
+            )));
+        }
+        if entry.exists() {
+            return Ok(());
+        }
+        use std::io::Write;
+        let mut pending = tempfile::NamedTempFile::new_in(&self.root).map_err(|error| {
+            StoreError::InvalidPath(format!(
+                "Failed to stage profile '{}': {error}",
+                profile.display()
+            ))
+        })?;
+        pending.write_all(content.as_bytes()).map_err(|error| {
+            StoreError::InvalidPath(format!(
+                "Failed to write profile registration '{}': {error}",
+                profile.display()
+            ))
+        })?;
+        pending.persist_noclobber(&entry).map_err(|error| {
+            StoreError::InvalidPath(format!(
+                "Failed to publish profile registration '{}': {}",
+                entry.display(),
+                error.error
+            ))
+        })?;
+        Ok(())
+    }
+
+    /// Validate and discover every profile published into this store.
+    pub fn profile_dirs(&self) -> Result<Vec<PathBuf>, StoreError> {
+        let registry = self.root.join(PROFILE_REGISTRY);
+        match fs::symlink_metadata(&registry) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(StoreError::InvalidPath(format!(
+                    "Failed to inspect profile registry '{}': {error}",
+                    registry.display()
+                )));
+            }
+            Ok(metadata) if metadata.file_type().is_dir() => {}
+            Ok(_) => {
+                return Err(StoreError::InvalidPath(format!(
+                    "Profile registry '{}' is not a directory",
+                    registry.display()
+                )));
+            }
+        }
+        let mut profiles = Vec::new();
+        for entry in fs::read_dir(&registry)? {
+            let entry = entry?;
+            let file = entry.path();
+            let metadata = fs::symlink_metadata(&file).map_err(|error| {
+                StoreError::InvalidPath(format!(
+                    "Failed to inspect profile registry entry '{}': {error}",
+                    file.display()
+                ))
+            })?;
+            if !metadata.file_type().is_file() || metadata.len() > MAX_PROFILE_PATH_BYTES {
+                return Err(StoreError::InvalidPath(format!(
+                    "Profile registry entry '{}' is not a bounded regular file",
+                    file.display()
+                )));
+            }
+            let content = fs::read_to_string(&file).map_err(|error| {
+                StoreError::InvalidPath(format!(
+                    "Failed to read profile registry entry '{}': {error}",
+                    file.display()
+                ))
+            })?;
+            let profile = PathBuf::from(&content);
+            if profile_registry_name(&profile)? != entry.file_name().to_string_lossy() {
+                return Err(StoreError::InvalidPath(format!(
+                    "Profile registry entry '{}' has an invalid identity",
+                    file.display()
+                )));
+            }
+            validate_profile_path(&profile)?;
+            profiles.push(profile);
+        }
+        Ok(profiles)
+    }
+
     /// Check if a path exists in the store.
     /// 检查路径是否存在于存储中。
     pub fn path_exists(&self, path: &StorePath) -> bool {
@@ -88,6 +276,7 @@ impl Store {
     /// Add a file to the store with a specific hash.
     /// 将文件添加到存储并使用特定哈希。
     pub fn add_file(&self, source: &Path, name: &str) -> Result<StorePath, StoreError> {
+        validate_store_name(name)?;
         // Read and hash the file
         // 读取并哈希文件
         let content = fs::read(source)?;
@@ -121,12 +310,14 @@ impl Store {
             fs::set_permissions(&dest, perms)?;
         }
 
+        self.register_path_metadata(&store_path)?;
         Ok(store_path)
     }
 
     /// Add a directory to the store.
     /// 将目录添加到存储。
     pub fn add_dir(&self, source: &Path, name: &str) -> Result<StorePath, StoreError> {
+        validate_store_name(name)?;
         // Hash the directory contents (simplified: just hash file names and contents)
         // 哈希目录内容（简化：只哈希文件名和内容）
         let hash = hash_dir(source)?;
@@ -139,12 +330,14 @@ impl Store {
             make_readonly_recursive(&dest)?;
         }
 
+        self.register_path_metadata(&store_path)?;
         Ok(store_path)
     }
 
     /// Add content directly to the store.
     /// 将内容直接添加到存储。
     pub fn add_content(&self, content: &[u8], name: &str) -> Result<StorePath, StoreError> {
+        validate_store_name(name)?;
         let hash = Hash::of(content);
         let store_path = StorePath::new(hash, name.to_string());
         let dest = self.to_path(&store_path);
@@ -159,13 +352,40 @@ impl Store {
             fs::set_permissions(&dest, perms)?;
         }
 
+        self.register_path_metadata(&store_path)?;
         Ok(store_path)
+    }
+
+    pub(crate) fn scan_path_metadata(
+        &self,
+        store_path: &StorePath,
+    ) -> Result<PathInfo, StoreError> {
+        let (nar_size, references) =
+            self.scan_path_references(&self.to_path(store_path), Some(store_path))?;
+        let mut info = PathInfo::new(store_path.clone(), *store_path.hash(), nar_size);
+        info.references = references;
+        Ok(info)
+    }
+
+    pub(crate) fn scan_path_references(
+        &self,
+        path: &Path,
+        current: Option<&StorePath>,
+    ) -> Result<(u64, HashSet<StorePath>), StoreError> {
+        let mut references = HashSet::new();
+        let size = scan_store_path(path, current, self, &mut references)?;
+        Ok((size, references))
+    }
+
+    fn register_path_metadata(&self, store_path: &StorePath) -> Result<(), StoreError> {
+        Database::open(self.root.clone())?.register(self.scan_path_metadata(store_path)?)
     }
 
     /// Add a derivation to the store.
     /// 将推导添加到存储。
     pub fn add_derivation(&mut self, drv: &Derivation) -> Result<StorePath, StoreError> {
         let drv_path = drv.drv_path();
+        validate_store_name(drv_path.name())?;
         let dest = self.to_path(&drv_path);
 
         if !dest.exists() {
@@ -328,6 +548,124 @@ fn hash_dir_recursive(path: &Path, hasher: &mut n3v3_derive::Hasher) -> Result<(
         }
     }
 
+    Ok(())
+}
+
+fn scan_store_path(
+    path: &Path,
+    current: Option<&StorePath>,
+    store: &Store,
+    references: &mut HashSet<StorePath>,
+) -> Result<u64, StoreError> {
+    let mut size = 0_u64;
+    let mut pending = vec![path.to_path_buf()];
+    let scan_root = fs::canonicalize(path)?;
+    let store_root = fs::canonicalize(store.root())?;
+    while let Some(path) = pending.pop() {
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            let target = fs::read_link(&path)?;
+            size = size.saturating_add(metadata.len());
+            collect_store_references(
+                target.as_os_str().as_encoded_bytes(),
+                current,
+                store,
+                references,
+            );
+            let resolved = fs::canonicalize(&path)?;
+            if !resolved.starts_with(&scan_root)
+                && !references.iter().any(|reference| {
+                    resolved.starts_with(store_root.join(reference.display_name()))
+                })
+            {
+                return Err(StoreError::InvalidPath(format!(
+                    "Cannot determine store references through symlink '{}'",
+                    path.display()
+                )));
+            }
+        } else if metadata.is_dir() {
+            for entry in fs::read_dir(&path)? {
+                pending.push(entry?.path());
+            }
+        } else if metadata.is_file() {
+            let content = fs::read(&path)?;
+            size = size.saturating_add(metadata.len());
+            collect_store_references(&content, current, store, references);
+        } else {
+            return Err(StoreError::InvalidPath(format!(
+                "Cannot scan unsupported store entry '{}'",
+                path.display()
+            )));
+        }
+    }
+    Ok(size)
+}
+
+fn collect_store_references(
+    content: &[u8],
+    current: Option<&StorePath>,
+    store: &Store,
+    references: &mut HashSet<StorePath>,
+) {
+    collect_absolute_store_references(content, current, store, references);
+    let text = String::from_utf8_lossy(content);
+    for token in text.split(|ch: char| {
+        !(ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '+' | '@'))
+    }) {
+        if token.len() <= 65 {
+            continue;
+        }
+        let Some(candidate) = StorePath::parse_name(token) else {
+            continue;
+        };
+        if current != Some(&candidate) && store.path_exists(&candidate) {
+            references.insert(candidate);
+        }
+    }
+}
+
+fn collect_absolute_store_references(
+    content: &[u8],
+    current: Option<&StorePath>,
+    store: &Store,
+    references: &mut HashSet<StorePath>,
+) {
+    const MAX_STORE_COMPONENT_BYTES: usize = 255;
+    let root = store.root().as_os_str().as_encoded_bytes();
+    for start in content
+        .windows(root.len())
+        .enumerate()
+        .filter_map(|(index, bytes)| (bytes == root).then_some(index + root.len()))
+    {
+        if content.get(start) != Some(&b'/') {
+            continue;
+        }
+        let remainder = &content[start + 1..];
+        let limit = remainder
+            .iter()
+            .position(|byte| matches!(byte, b'/' | b'\0'))
+            .unwrap_or(remainder.len())
+            .min(MAX_STORE_COMPONENT_BYTES);
+        for end in 66..=limit {
+            let Ok(name) = std::str::from_utf8(&remainder[..end]) else {
+                continue;
+            };
+            let Some(candidate) = StorePath::parse_name(name) else {
+                continue;
+            };
+            if current != Some(&candidate) && store.path_exists(&candidate) {
+                references.insert(candidate);
+            }
+        }
+    }
+}
+
+fn validate_store_name(name: &str) -> Result<(), StoreError> {
+    if name.is_empty() || name.contains(['/', '\\', '\0']) {
+        return Err(StoreError::InvalidPath(format!(
+            "store path name must be a non-empty path component: {name:?}"
+        )));
+    }
     Ok(())
 }
 

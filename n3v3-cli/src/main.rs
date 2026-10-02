@@ -211,6 +211,10 @@ enum Commands {
         /// 包含软件包数据的目录。
         #[arg(default_value = "./registry-data")]
         dir: String,
+        /// Address to listen on. Only loopback addresses are accepted.
+        /// 要监听的地址。仅接受回环地址。
+        #[arg(long, default_value = "127.0.0.1")]
+        host: std::net::IpAddr,
         /// Port to listen on.
         /// 要监听的端口。
         #[arg(long, default_value = "8080")]
@@ -440,7 +444,9 @@ fn main() {
             commands::registry::update(registry_url.as_deref())
         }
         #[cfg(unix)]
-        Commands::RegistryServe { dir, port } => commands::registry_serve::run(&dir, port),
+        Commands::RegistryServe { dir, host, port } => {
+            commands::registry_serve::run(&dir, host, port)
+        }
         #[cfg(unix)]
         Commands::RegistryPublish { dir, registry_url } => {
             commands::registry_publish::run(&dir, registry_url.as_deref())
@@ -479,5 +485,36 @@ fn main() {
             1 // I/O, config, unknown errors
         };
         std::process::exit(code);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{Cli, Commands};
+    use clap::Parser;
+
+    #[test]
+    fn registry_serve_default_host_is_loopback() {
+        let cli = Cli::try_parse_from(["n3v3", "registry-serve"]).unwrap();
+        match cli.command {
+            Commands::RegistryServe { host, port, .. } => {
+                assert!(host.is_loopback());
+                assert_eq!(port, 8080);
+            }
+            _ => panic!("expected registry-serve command"),
+        }
+    }
+
+    #[test]
+    fn registry_serve_host_option_parses_ip_address() {
+        let cli = Cli::try_parse_from(["n3v3", "registry-serve", "--host", "::1", "--port", "0"])
+            .unwrap();
+        match cli.command {
+            Commands::RegistryServe { host, port, .. } => {
+                assert!(host.is_loopback());
+                assert_eq!(port, 0);
+            }
+            _ => panic!("expected registry-serve command"),
+        }
     }
 }

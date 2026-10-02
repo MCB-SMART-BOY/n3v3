@@ -102,7 +102,7 @@ def runTest (label : String) (e : Expr) (expected : String) : IO Unit := do
   else
     IO.println s!"❌ {label}: got {result}, expected {expected}"
 
-def main : IO Unit := do
+def evalTestMain : IO Unit := do
   -- Arithmetic
   runTest "1+2" (Expr.binop BinOp.Add (Expr.lit_int 1) (Expr.lit_int 2)) "3"
   runTest "(3+4)*2" (Expr.binop BinOp.Mul

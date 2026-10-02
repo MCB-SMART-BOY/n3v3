@@ -22,4 +22,4 @@ io.writeFile("/tmp/n3v3-demo/nested/data.txt", "nested file");
 
 entries = io.readDir("/tmp/n3v3-demo")
 
-println(entries);
+println(entries)

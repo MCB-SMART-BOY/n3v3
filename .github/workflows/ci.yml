@@ -241,10 +241,8 @@ jobs:
           cd formal
           lake build
 
-      - name: Run differential tests / 运行差分测试
-        run: |
-          export PATH="$PWD/target/release:$PATH"
-          cargo run -p n3v3 --release -- run scripts/diff-test.n3v3 -- -n 100 -d 4
+      - name: Run deterministic Rust ↔ Lean differential tests / 运行确定性 Rust ↔ Lean 差分测试
+        run: cargo run --release -p n3v3 --example gen_diff_test -- -n 100 -d 4 -s 42
 
   # Lightweight per-push attack coverage; the nightly workflow owns extended
   # property, formal, and generated differential suites.

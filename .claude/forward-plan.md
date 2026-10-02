@@ -1,4 +1,4 @@
-# n3v3 Forward Plan — 2026-09-25
+# n3v3 Forward Plan — 2026-10-03
 
 
 ## Current State / 当前状态
@@ -28,15 +28,12 @@ The AST/HIR/tooling boundary cutover is implemented. Open follow-up work is:
   fail closed with `UnsupportedPlatform` until an equivalent directory-handle
   implementation is available.
 - MSRV / `rust-version` remains undeclared.
-- CI coverage, benchmark, and fuzz gates are still absent.
+- CI now includes deterministic Rust ↔ Lean differential evaluation; code-coverage, benchmark, and fuzz gates remain absent.
 - `json_to_value` still has no explicit recursion-depth limit.
 - `kill_process` still has a PID-reuse window.
 - Trait fallback selection remains nondeterministic for multiple candidates.
 - The tree-sitter grammar remains v3.x-shaped.
 - `io.tempDir` is Implemented through evaluator-owned dispatch; it returns the callback value and cleans up afterward (`crates/n3v3-eval/src/eval.rs:1712-1717,2658-2678`; `tests/end_to_end.rs::test_end_to_end_io_temp_dir_returns_value_and_cleans_up`).
-- `n3v3 fmt` drops shebang lines: the parser strips `#!` before parsing (`crates/n3v3-parser/src/lib.rs:39-41`), so the AST cannot carry it and `n3v3 fmt file --write` removes it from executable scripts (6 files under `examples/` are affected). Fixing needs parser/AST plumbing; not yet scheduled.
-- A bare `{ ... }` record cannot be a lambda body: after lambda parameters `{` starts a block (`crates/n3v3-parser/src/parser.rs::parse_lambda_body`), so `|x| { a = 1, b = 2 }` is a parse error while `|x| ({ ... })` and `|x| #{ ... }` work. The formatter now prints the parenthesized form; whether the language should accept the bare form is an open language decision (needs grammar/spec/tree-sitter/Lean agreement).
-- 17 of 25 `examples/**/*.n3v3` files are not in canonical form (`.claude/hooks/fmt-all.sh` reports them; 6 carry a shebang, whose loss the formatter cannot avoid yet). Reformatting them is a repo-wide change that needs approval, and it should happen after shebang preservation is implemented - otherwise `n3v3 fmt --write` would strip the shebang from the executable examples.
 - `io.streamLines` and `io.streamBytes` retain a runtime-only Path acceptance extension; the typeck/docs contract remains `String` (`crates/n3v3-typeck/src/check/builtin_type.rs:1459-1472`).
 - CLI gate fidelity: `--release` now builds the release CLI in its `build` gate and drives `cli-smoke`/`docs` with that binary (`N3V3_BIN` for the docs checker), and `.claude/skills/run-n3v3/driver.sh` rebuilds before every run. Before this, a stale `target/release/n3v3` still produced `[PASS]` for those gates - the stale binary reported `type error(s) found`/exit 3 for a lexer error that current code classifies as `parse error`/exit 2. `cargo build --release -p n3v3` in release mode costs ~80 s cold, ~0 s warm.
 - `.claude/skills/run-n3v3/driver.sh:86` has a pre-existing `shellcheck` SC2086 (unquoted `$BIN` in `timeout 3 $BIN lsp --check`). No gate runs `shellcheck`, so it is informational; `scripts/validate.sh` and `scripts/check-docs.sh` are clean.
@@ -87,6 +84,26 @@ filtering, error prefix, and size-limit contracts remain in force. This is an
 internal adapter, not a `Value`, `Job<T>`, Action syntax, frontend plan
 expansion, or cold Stream implementation. Spawn/timeout/await-any and
 evaluator-owned streaming paths remain legacy boundaries for later slices.
+
+**2026-10-03 product hardening closeout**: the platform paths now share explicit
+fail-closed boundaries. Configuration builds persist immutable, hashed
+activation artifacts before publishing a generation; switch/rollback activate
+those artifacts under a checked root and restore the previous pointer on
+failure. NAR extraction rejects unsafe entries and trailing payloads, binary
+cache substitution verifies declared size/hash before extraction, direct store
+additions register metadata and references, and GC treats validated profile
+generations plus store references as roots. `n3v3 init` uses create-new writes
+with rollback, `n3v3 fmt --write` preserves shebangs and permission bits, all 25
+examples are canonical, and the loopback-only built-in registry requires
+`N3V3_REGISTRY_TOKEN` for publishing. CI runs the generated fixed-seed Rust ↔
+Lean differential suite rather than the removed self-comparison script.
+
+The acceptance evidence does not justify expanding Action/Job/Stream IR in this
+hardening slice: the canonical HIR path is complete, while the remaining
+migration changes product semantics rather than closing a demonstrated safety
+gap. Public registry deployment is likewise deferred; the built-in service
+remains a loopback development server, and public operation requires the
+separate TLS/auth/policy gateway described in `docs/project/registry.md`.
 
 
 ## Release Exit Criteria / 发布退出标准
@@ -200,7 +217,7 @@ Verification entry point: `scripts/validate.sh` (use `--ci` or `--release` for t
 | tree-sitter grammar diverges from v4.0 | High | Medium | Update `grammar.js`, regenerate, and validate through `scripts/validate.sh` |
 | JSON depth and PID reuse remain open | Medium | High | Add explicit depth bounds and process-identity-safe termination |
 | `io.streamLines` / `io.streamBytes` runtime-only Path extension | Medium | Medium | Keep typeck/docs `String` declarations in `builtin_type.rs:1459-1472` canonical; reconcile runtime acceptance at `fs.rs:1577-1586,1706-1714` |
-| `OsHost` on non-Unix targets | Medium | Medium | Fail closed with `UnsupportedPlatform`; add a platform-native directory-handle implementation before enabling OS-host execution there |
+| Built-in registry lacks TLS, policy, audit, and multi-tenant isolation | High if port-forwarded | High | Keep it loopback-only with bearer-authenticated writes; require a TLS/auth gateway or dedicated registry before public exposure |
 
 
 ## Decision Gates / 决策门

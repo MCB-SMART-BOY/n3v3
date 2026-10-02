@@ -87,10 +87,57 @@ impl Database {
         })
     }
 
-    /// Get the path to the info file for a store path.
-    /// 获取存储路径的信息文件路径。
-    fn info_path(&self, store_path: &StorePath) -> PathBuf {
+    /// Encode the complete name into bounded, filesystem-safe components.
+    pub(crate) fn info_path(&self, store_path: &StorePath) -> PathBuf {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        const COMPONENT_BYTES: usize = 64;
+        let mut path = self.root.join(store_path.hash().to_string());
+        for chunk in store_path.name().as_bytes().chunks(COMPONENT_BYTES) {
+            let mut component = String::with_capacity(chunk.len() * 2);
+            for byte in chunk {
+                component.push(char::from(HEX[(byte >> 4) as usize]));
+                component.push(char::from(HEX[(byte & 0xf) as usize]));
+            }
+            path.push(component);
+        }
+        path.join("info.json")
+    }
+
+    fn legacy_info_path(&self, store_path: &StorePath) -> PathBuf {
         self.root.join(format!("{}.json", store_path.hash()))
+    }
+
+    fn read_info(path: &std::path::Path, requested: &StorePath) -> Result<PathInfo, StoreError> {
+        let info: PathInfo = serde_json::from_str(&fs::read_to_string(path)?)?;
+        if info.path != *requested {
+            return Err(StoreError::InvalidPath(format!(
+                "PathInfo '{}' for '{}' belongs to '{}'",
+                path.display(),
+                requested.display_name(),
+                info.path.display_name()
+            )));
+        }
+        Ok(info)
+    }
+
+    fn legacy_info(&self, store_path: &StorePath) -> Result<Option<PathInfo>, StoreError> {
+        let path = self.legacy_info_path(store_path);
+        match fs::read_to_string(&path) {
+            Ok(json) => {
+                let info: PathInfo = serde_json::from_str(&json)?;
+                if info.path != *store_path {
+                    return Err(StoreError::InvalidPath(format!(
+                        "Legacy PathInfo '{}' for '{}' belongs to '{}'",
+                        path.display(),
+                        store_path.display_name(),
+                        info.path.display_name()
+                    )));
+                }
+                Ok(Some(info))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Register a path in the database.
@@ -98,6 +145,9 @@ impl Database {
     pub fn register(&mut self, info: PathInfo) -> Result<(), StoreError> {
         let path = self.info_path(&info.path);
         let json = serde_json::to_string_pretty(&info)?;
+        fs::create_dir_all(path.parent().ok_or_else(|| {
+            StoreError::InvalidPath(format!("Invalid PathInfo location '{}'", path.display()))
+        })?)?;
         fs::write(&path, json)?;
         self.cache.insert(info.path.clone(), info);
         Ok(())
@@ -111,15 +161,17 @@ impl Database {
         }
 
         let path = self.info_path(store_path);
-        if !path.exists() {
-            return Ok(None);
+        let info = match fs::symlink_metadata(&path) {
+            Ok(_) => Some(Self::read_info(&path, store_path)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.legacy_info(store_path)?
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if let Some(info) = &info {
+            self.cache.insert(store_path.clone(), info.clone());
         }
-
-        let json = fs::read_to_string(&path)?;
-        let info: PathInfo = serde_json::from_str(&json)?;
-        self.cache.insert(store_path.clone(), info.clone());
-
-        Ok(Some(info))
+        Ok(info)
     }
 
     /// Check if a path is valid (registered and exists).
@@ -147,25 +199,11 @@ impl Database {
         store_path: &StorePath,
     ) -> Result<HashSet<StorePath>, StoreError> {
         let mut referrers = HashSet::new();
-
-        // Scan all info files (inefficient, but simple)
-        // 扫描所有信息文件（低效但简单）
-        if !self.root.exists() {
-            return Ok(referrers);
-        }
-
-        for entry in fs::read_dir(&self.root)? {
-            let entry = entry?;
-            if entry.path().extension().is_some_and(|e| e == "json") {
-                let json = fs::read_to_string(entry.path())?;
-                if let Ok(info) = serde_json::from_str::<PathInfo>(&json)
-                    && info.references.contains(store_path)
-                {
-                    referrers.insert(info.path);
-                }
+        for path in self.list_all()? {
+            if self.get_references(&path)?.contains(store_path) {
+                referrers.insert(path);
             }
         }
-
         Ok(referrers)
     }
 
@@ -173,7 +211,20 @@ impl Database {
     /// 从数据库中删除路径信息。
     pub fn delete(&mut self, store_path: &StorePath) -> Result<(), StoreError> {
         let path = self.info_path(store_path);
-        if path.exists() {
+        let has_current = path.exists();
+        if has_current {
+            Self::read_info(&path, store_path)?;
+        }
+        let has_legacy = match self.legacy_info(store_path) {
+            Ok(info) => info.is_some(),
+            // A different name can own the old hash-only record. Never delete it.
+            Err(StoreError::InvalidPath(_)) if has_current => false,
+            Err(error) => return Err(error),
+        };
+        if has_legacy {
+            fs::remove_file(self.legacy_info_path(store_path))?;
+        }
+        if has_current {
             fs::remove_file(&path)?;
         }
         self.cache.remove(store_path);
@@ -193,22 +244,22 @@ impl Database {
     /// List all registered paths.
     /// 列出所有已注册的路径。
     pub fn list_all(&self) -> Result<Vec<StorePath>, StoreError> {
-        let mut paths = Vec::new();
-
-        if !self.root.exists() {
-            return Ok(paths);
-        }
-
-        for entry in fs::read_dir(&self.root)? {
-            let entry = entry?;
-            if entry.path().extension().is_some_and(|e| e == "json") {
-                let json = fs::read_to_string(entry.path())?;
-                if let Ok(info) = serde_json::from_str::<PathInfo>(&json) {
-                    paths.push(info.path);
+        let mut paths = HashSet::new();
+        let mut pending = vec![self.root.clone()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory)? {
+                let entry = entry?;
+                let kind = entry.file_type()?;
+                if kind.is_dir() {
+                    pending.push(entry.path());
+                } else if kind.is_file() && entry.path().extension().is_some_and(|e| e == "json") {
+                    let info: PathInfo = serde_json::from_str(&fs::read_to_string(entry.path())?)?;
+                    paths.insert(info.path);
                 }
             }
         }
-
+        let mut paths = paths.into_iter().collect::<Vec<_>>();
+        paths.sort();
         Ok(paths)
     }
 }
@@ -220,4 +271,76 @@ fn current_time() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_info_same_hash_different_names_coexist() {
+        let temp = tempfile::tempdir().unwrap();
+        let hash = Hash::of(b"same contents");
+        let first = StorePath::new(hash, "a".into());
+        let second = StorePath::new(hash, "b".into());
+        let mut db = Database::open(temp.path().to_path_buf()).unwrap();
+        db.register(PathInfo::new(first.clone(), hash, 10)).unwrap();
+        db.register(PathInfo::new(second.clone(), hash, 20))
+            .unwrap();
+
+        let mut reopened = Database::open(temp.path().to_path_buf()).unwrap();
+        assert_eq!(reopened.query(&first).unwrap().unwrap().nar_size, 10);
+        assert_eq!(reopened.query(&second).unwrap().unwrap().nar_size, 20);
+        assert_eq!(
+            reopened.list_all().unwrap(),
+            vec![first.clone(), second.clone()]
+        );
+        reopened.delete(&first).unwrap();
+        assert!(reopened.query(&first).unwrap().is_none());
+        assert_eq!(reopened.query(&second).unwrap().unwrap().nar_size, 20);
+    }
+
+    #[test]
+    fn path_info_matching_legacy_record_reads_without_duplicate_enumeration() {
+        let temp = tempfile::tempdir().unwrap();
+        let hash = Hash::of(b"legacy");
+        let path = StorePath::new(hash, "legacy".into());
+        let info = PathInfo::new(path.clone(), hash, 42);
+        let mut db = Database::open(temp.path().to_path_buf()).unwrap();
+        let legacy = db.legacy_info_path(&path);
+        fs::write(&legacy, serde_json::to_vec(&info).unwrap()).unwrap();
+        assert_eq!(db.query(&path).unwrap().unwrap().nar_size, 42);
+        db.register(info).unwrap();
+        assert_eq!(db.list_all().unwrap(), vec![path.clone()]);
+        db.delete(&path).unwrap();
+        assert!(!legacy.exists());
+        assert!(db.query(&path).unwrap().is_none());
+    }
+
+    #[test]
+    fn path_info_mismatched_legacy_record_fails_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        let hash = Hash::of(b"shared");
+        let first = StorePath::new(hash, "a".into());
+        let second = StorePath::new(hash, "b".into());
+        let mut db = Database::open(temp.path().to_path_buf()).unwrap();
+        let legacy = db.legacy_info_path(&first);
+        fs::write(
+            &legacy,
+            serde_json::to_vec(&PathInfo::new(first.clone(), hash, 1)).unwrap(),
+        )
+        .unwrap();
+        let error = db.query(&second).unwrap_err();
+        assert!(error.to_string().contains("Legacy PathInfo"), "{error}");
+        assert!(error.to_string().contains(&first.display_name()), "{error}");
+        assert!(db.delete(&second).is_err());
+        assert!(legacy.exists());
+        assert_eq!(db.query(&first).unwrap().unwrap().nar_size, 1);
+        db.register(PathInfo::new(second.clone(), hash, 2)).unwrap();
+        assert_eq!(db.list_all().unwrap(), vec![first.clone(), second.clone()]);
+        assert_eq!(db.query(&second).unwrap().unwrap().nar_size, 2);
+        db.delete(&second).unwrap();
+        assert!(legacy.exists());
+        assert_eq!(db.query(&first).unwrap().unwrap().nar_size, 1);
+    }
 }

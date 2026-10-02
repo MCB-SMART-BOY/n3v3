@@ -1,9 +1,13 @@
-use std.list;
-use std.string;
+use std.list
 
-let nums = list.range(1, 3);
-let total = list.len(nums);
+use std.string
 
-let words = ["root", "import"];
-let joined = string.join(words, " ");
-let result = #{ total = total, joined = joined };
+nums = list.range(1, 3)
+
+total = list.len(nums)
+
+words = ["root", "import"]
+
+joined = string.join(words, " ")
+
+result = { total = total, joined = joined }

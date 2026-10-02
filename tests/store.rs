@@ -44,6 +44,14 @@ fn test_add_content() {
 }
 
 #[test]
+fn add_content_path_separator_name_returns_invalid_path() {
+    let store = temp_store("invalid-name");
+    let error = store.add_content(b"payload", "nested/package").unwrap_err();
+    assert!(error.to_string().contains("non-empty path component"));
+    let _ = fs::remove_dir_all(store.root());
+}
+
+#[test]
 fn test_add_derivation() {
     let mut store = temp_store("drv");
     let drv = Derivation::builder("test", "1.0")

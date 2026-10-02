@@ -18,4 +18,4 @@ addOne = |x| {
   x + 1
 }
 
-println(20 |> double |> addOne);
+println(20 |> double |> addOne)

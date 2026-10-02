@@ -5,7 +5,7 @@ main() = {
   let (args, _) = io.args();
   let name = match args {
     [n, ..] -> n,
-    [] -> "World"
+    [] -> "World",
   };
   io.println("Hello, " ++ name ++ "!");
   let files = io.glob("*.n3v3");

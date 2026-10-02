@@ -7,8 +7,9 @@
 use crate::{ConfigError, SystemConfig};
 use n3v3_derive::{Derivation, StorePath};
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 /// Configuration generator.
 /// 配置生成器。
@@ -115,7 +116,13 @@ impl Generator {
     /// Generate configuration files.
     /// 生成配置文件。
     pub fn generate(&self, config: &SystemConfig) -> Result<GeneratedConfig, ConfigError> {
-        fs::create_dir_all(&self.output_dir)?;
+        for name in &config.options.services {
+            validate_generated_component(name, "service")?;
+        }
+        for user in &config.options.users {
+            validate_generated_component(&user.name, "user")?;
+        }
+        create_private_directory(&self.output_dir)?;
 
         let mut generated = GeneratedConfig::new();
 
@@ -135,10 +142,6 @@ impl Generator {
         // 生成环境配置
         self.generate_environment(config, &mut generated)?;
 
-        // Generate activation script
-        // 生成激活脚本
-        self.generate_activation_script(config, &mut generated)?;
-
         Ok(generated)
     }
 
@@ -150,12 +153,12 @@ impl Generator {
         generated: &mut GeneratedConfig,
     ) -> Result<(), ConfigError> {
         let etc_dir = self.output_dir.join("etc");
-        fs::create_dir_all(&etc_dir)?;
+        create_private_directory(&etc_dir)?;
 
         // /etc/hostname
         if let Some(ref hostname) = config.options.hostname {
             let path = etc_dir.join("hostname");
-            fs::write(&path, format!("{}\n", hostname))?;
+            write_generated_file(&path, format!("{}\n", hostname).as_bytes())?;
             generated.files.push(GeneratedFile {
                 source: path,
                 target: PathBuf::from("/etc/hostname"),
@@ -166,7 +169,7 @@ impl Generator {
         // /etc/timezone
         if let Some(ref timezone) = config.options.timezone {
             let path = etc_dir.join("timezone");
-            fs::write(&path, format!("{}\n", timezone))?;
+            write_generated_file(&path, format!("{}\n", timezone).as_bytes())?;
             generated.files.push(GeneratedFile {
                 source: path,
                 target: PathBuf::from("/etc/timezone"),
@@ -177,7 +180,7 @@ impl Generator {
         // /etc/locale.conf
         if let Some(ref locale) = config.options.locale {
             let path = etc_dir.join("locale.conf");
-            fs::write(&path, format!("LANG={}\n", locale))?;
+            write_generated_file(&path, format!("LANG={}\n", locale).as_bytes())?;
             generated.files.push(GeneratedFile {
                 source: path,
                 target: PathBuf::from("/etc/locale.conf"),
@@ -196,7 +199,8 @@ impl Generator {
         generated: &mut GeneratedConfig,
     ) -> Result<(), ConfigError> {
         let services_dir = self.output_dir.join("etc/systemd/system");
-        fs::create_dir_all(&services_dir)?;
+        create_private_directory(&self.output_dir.join("etc/systemd"))?;
+        create_private_directory(&services_dir)?;
 
         // Generate systemd units for each service
         // 为每个服务生成 systemd 单元
@@ -205,7 +209,7 @@ impl Generator {
             let unit_content = self.render_service_unit(&unit);
 
             let unit_path = services_dir.join(format!("{}.service", service_name));
-            fs::write(&unit_path, &unit_content)?;
+            write_generated_file(&unit_path, unit_content.as_bytes())?;
 
             generated.files.push(GeneratedFile {
                 source: unit_path,
@@ -216,7 +220,7 @@ impl Generator {
             // Create symlink for multi-user.target.wants
             // 为 multi-user.target.wants 创建符号链接
             let wants_dir = services_dir.join("multi-user.target.wants");
-            fs::create_dir_all(&wants_dir)?;
+            create_private_directory(&wants_dir)?;
 
             #[cfg(unix)]
             {
@@ -353,7 +357,7 @@ impl Generator {
         generated: &mut GeneratedConfig,
     ) -> Result<(), ConfigError> {
         let etc_dir = self.output_dir.join("etc");
-        fs::create_dir_all(&etc_dir)?;
+        create_private_directory(&etc_dir)?;
 
         // Generate passwd entries
         // 生成 passwd 条目
@@ -374,7 +378,7 @@ impl Generator {
         }
 
         let passwd_path = etc_dir.join("passwd");
-        fs::write(&passwd_path, &passwd_content)?;
+        write_generated_file(&passwd_path, passwd_content.as_bytes())?;
         generated.files.push(GeneratedFile {
             source: passwd_path,
             target: PathBuf::from("/etc/passwd"),
@@ -426,7 +430,7 @@ impl Generator {
         }
 
         let group_path = etc_dir.join("group");
-        fs::write(&group_path, &group_content)?;
+        write_generated_file(&group_path, group_content.as_bytes())?;
         generated.files.push(GeneratedFile {
             source: group_path,
             target: PathBuf::from("/etc/group"),
@@ -458,7 +462,7 @@ impl Generator {
         }
 
         let shadow_path = etc_dir.join("shadow");
-        fs::write(&shadow_path, &shadow_content)?;
+        write_generated_file(&shadow_path, shadow_content.as_bytes())?;
         generated.files.push(GeneratedFile {
             source: shadow_path,
             target: PathBuf::from("/etc/shadow"),
@@ -468,11 +472,11 @@ impl Generator {
         // Create user home directory structure info
         // 创建用户主目录结构信息
         let users_dir = self.output_dir.join("users");
-        fs::create_dir_all(&users_dir)?;
+        create_private_directory(&users_dir)?;
 
         for user in &config.options.users {
             let user_dir = users_dir.join(&user.name);
-            fs::create_dir_all(&user_dir)?;
+            create_private_directory(&user_dir)?;
 
             // User info for activation script
             // 用于激活脚本的用户信息
@@ -483,10 +487,13 @@ impl Generator {
                 user.shell.as_deref().unwrap_or("/bin/sh"),
                 user.groups.join(",")
             );
-            fs::write(user_dir.join("info"), info)?;
+            write_generated_file(&user_dir.join("info"), info.as_bytes())?;
 
             // User packages / 用户包
-            fs::write(user_dir.join("packages"), user.packages.join("\n") + "\n")?;
+            write_generated_file(
+                &user_dir.join("packages"),
+                (user.packages.join("\n") + "\n").as_bytes(),
+            )?;
         }
 
         Ok(())
@@ -506,67 +513,12 @@ impl Generator {
             content.push_str(&format!("export {}=\"{}\"\n", key, value));
         }
 
-        fs::write(&env_path, content)?;
+        write_generated_file(&env_path, content.as_bytes())?;
         generated.files.push(GeneratedFile {
             source: env_path,
             target: PathBuf::from("/etc/profile.d/n3v3-env.sh"),
             mode: 0o644,
         });
-
-        Ok(())
-    }
-
-    /// Generate the activation script.
-    /// 生成激活脚本。
-    fn generate_activation_script(
-        &self,
-        config: &SystemConfig,
-        generated: &mut GeneratedConfig,
-    ) -> Result<(), ConfigError> {
-        let script_path = self.output_dir.join("activate");
-
-        let mut script = String::from("#!/bin/sh\n");
-        script.push_str("# n3v3 system activation script\n");
-        script.push_str("# n3v3 系统激活脚本\n\n");
-        script.push_str(&format!("# Configuration: {}\n", config.name));
-        script.push_str(&format!("# 配置：{}\n", config.name));
-        script.push_str(&format!("# Generation: {}\n\n", config.generation));
-
-        // Copy etc files
-        // 复制 etc 文件
-        script.push_str("echo 'Activating configuration...'\n");
-        script.push_str("echo '正在激活配置...'\n\n");
-
-        for file in &generated.files {
-            script.push_str(&format!(
-                "install -m {:o} {} {}\n",
-                file.mode,
-                file.source.display(),
-                file.target.display()
-            ));
-        }
-
-        // Enable services
-        // 启用服务
-        script.push_str("\n# Enable services / 启用服务\n");
-        for service in &generated.services {
-            script.push_str(&format!("# systemctl enable {}\n", service));
-        }
-
-        script.push_str("\necho 'Configuration activated.'\n");
-        script.push_str("echo '配置已激活。'\n");
-
-        fs::write(&script_path, script)?;
-
-        // Make executable
-        // 设置可执行权限
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))?;
-        }
-
-        generated.activation_script = Some(script_path);
 
         Ok(())
     }
@@ -593,6 +545,77 @@ impl Generator {
     }
 }
 
+fn validate_generated_component(name: &str, kind: &str) -> Result<(), ConfigError> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || !name.chars().all(|character| {
+            (kind == "user" && character.is_alphanumeric())
+                || character.is_ascii_alphanumeric()
+                || matches!(character, '_' | '-' | '.' | '@')
+        })
+    {
+        return Err(ConfigError::Invalid(format!(
+            "invalid {kind} name for generated path: {name:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn create_private_directory(path: &Path) -> Result<(), ConfigError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        let mut builder = fs::DirBuilder::new();
+        builder.mode(0o700);
+        if let Err(error) = builder.create(path)
+            && error.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(ConfigError::Io(error));
+        }
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.is_dir()
+            || metadata.file_type().is_symlink()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o022 != 0
+        {
+            return Err(ConfigError::Invalid(format!(
+                "generated directory is not trusted: {}",
+                path.display()
+            )));
+        }
+    }
+    #[cfg(not(unix))]
+    fs::create_dir_all(path)?;
+    Ok(())
+}
+
+fn write_generated_file(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
+    #[cfg(unix)]
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        use std::os::unix::fs::MetadataExt;
+        if !metadata.is_file()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o077 != 0
+        {
+            return Err(ConfigError::Invalid(format!(
+                "generated file is not private: {}",
+                path.display()
+            )));
+        }
+    }
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    Ok(())
+}
+
 /// Generated configuration.
 /// 生成的配置。
 #[derive(Debug, Clone)]
@@ -601,7 +624,8 @@ pub struct GeneratedConfig {
     pub files: Vec<GeneratedFile>,
     /// Enabled services. / 启用的服务。
     pub services: Vec<String>,
-    /// Activation script path. / 激活脚本路径。
+    /// Legacy activation script path; supplied scripts are rejected by the activator.
+    /// 旧版激活脚本路径；激活器拒绝执行外部脚本。
     pub activation_script: Option<PathBuf>,
     /// Store path (after registration). / 存储路径（注册后）。
     pub store_path: Option<StorePath>,
@@ -644,4 +668,22 @@ fn current_system() -> String {
     let arch = std::env::consts::ARCH;
     let os = std::env::consts::OS;
     format!("{}-{}", arch, os)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn generate_configuration_does_not_emit_activation_script()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let output = tempdir()?;
+        let generated =
+            Generator::new(output.path().to_path_buf()).generate(&SystemConfig::new("test"))?;
+
+        assert!(generated.activation_script.is_none());
+        assert!(!output.path().join("activate").exists());
+        Ok(())
+    }
 }

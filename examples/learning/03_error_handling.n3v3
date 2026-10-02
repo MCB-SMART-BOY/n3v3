@@ -1,7 +1,4 @@
-type Result =  {
-  | Ok(Int)
-  | Err(String)
-}
+type Result = | Ok(Int) | Err(String);
 
 safe_div(a: Int, b: Int) -> Result = {
   if b == 0 -> Err("division by zero") else Ok(a / b)

@@ -1,8 +1,9 @@
 #!/usr/bin/env n3v3
-use std.io = io;
+use std.io = io
 
-let build = io.execCommand(io.command("cargo", ["build", "--workspace"]));
+build = io.execCommand(io.command("cargo", ["build", "--workspace"]))
+
 if io.processSuccess(build) -> {
-    let test = io.execCommand(io.command("cargo", ["test", "--workspace"]));
-    io.processSuccess(test)
+  let test = io.execCommand(io.command("cargo", ["test", "--workspace"]));
+  io.processSuccess(test)
 } else false

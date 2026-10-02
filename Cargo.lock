@@ -1359,6 +1359,7 @@ dependencies = [
 name = "n3v3-config"
 version = "5.0.0"
 dependencies = [
+ "libc",
  "n3v3-builder",
  "n3v3-derive",
  "n3v3-diagnostic",
@@ -1514,7 +1515,7 @@ dependencies = [
  "flate2",
  "lzma-rs",
  "n3v3-derive",
- "n3v3-fetch",
+ "nix",
  "reqwest",
  "serde",
  "serde_json",

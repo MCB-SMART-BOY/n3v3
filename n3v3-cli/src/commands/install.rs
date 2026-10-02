@@ -5,123 +5,385 @@
 //! 将软件包安装到用户环境。
 
 use crate::output;
+use n3v3_store::Store;
+use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::symlink;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Install a package to the user environment.
 /// 将软件包安装到用户环境。
 pub fn run(package: &str) -> Result<(), String> {
-    let store_dir = get_store_dir();
-    let profile_dir = get_profile_dir();
+    install_at(package, &get_store_dir(), &get_profile_dir()?)
+}
 
-    // Find the package in the store
-    // 在存储中查找软件包
-    let package_path = find_package(&store_dir, package)?;
-
-    // Create profile directory if it doesn't exist
-    // 如果配置目录不存在，则创建它
-    fs::create_dir_all(&profile_dir)
-        .map_err(|e| format!("Failed to create profile directory: {}", e))?;
-
-    // Create generation directory
-    // 创建代目录
-    let generation = get_next_generation(&profile_dir)?;
-    let gen_dir = profile_dir.join(format!("generation-{}", generation));
-    fs::create_dir_all(&gen_dir)
-        .map_err(|e| format!("Failed to create generation directory: {}", e))?;
-
-    // Copy current generation's packages
-    // 复制当前代的软件包
-    let current_link = profile_dir.join("current");
-    if current_link.exists() {
-        let current_gen = fs::read_link(&current_link)
-            .map_err(|e| format!("Failed to read current link: {}", e))?;
-
-        // Copy manifest from current generation
-        // 从当前代复制清单
-        let manifest_src = current_gen.join("manifest");
-        if manifest_src.exists() {
-            let manifest_dst = gen_dir.join("manifest");
-            fs::copy(&manifest_src, &manifest_dst)
-                .map_err(|e| format!("Failed to copy manifest: {}", e))?;
-        }
+fn install_at(package: &str, store_dir: &PathBuf, profile_dir: &PathBuf) -> Result<(), String> {
+    if !store_dir.is_absolute() {
+        return Err(format!(
+            "Store root '{}' must be absolute",
+            store_dir.display()
+        ));
     }
+    let store = Store::open_at(store_dir.clone())
+        .map_err(|error| format!("Failed to open store '{}': {error}", store_dir.display()))?;
+    let _lock = store
+        .lock_profiles()
+        .map_err(|error| format!("Failed to lock store '{}': {error}", store_dir.display()))?;
+    let package_path = find_package(store_dir, package)?;
+    validate_store_package(store_dir, &package_path)?;
 
-    // Add the new package to the manifest
-    // 将新软件包添加到清单
-    let manifest_path = gen_dir.join("manifest");
-    let mut manifest = if manifest_path.exists() {
-        fs::read_to_string(&manifest_path).map_err(|e| format!("Failed to read manifest: {}", e))?
-    } else {
-        String::new()
-    };
+    fs::create_dir_all(profile_dir).map_err(|e| {
+        format!(
+            "Failed to create profile directory '{}': {e}",
+            profile_dir.display()
+        )
+    })?;
+    store.register_profile(profile_dir).map_err(|error| {
+        format!(
+            "Failed to register profile '{}': {error}",
+            profile_dir.display()
+        )
+    })?;
+    let current_link = profile_dir.join("current");
+    let mut packages = load_current_packages(profile_dir, store_dir)?;
 
-    // Check if already installed
-    // 检查是否已安装
-    if manifest
-        .lines()
-        .any(|line| line == package_path.to_string_lossy())
-    {
+    if packages.contains(&package_path) {
         output::info(&format!("Package '{package}' is already installed"));
-        // Clean up empty generation
-        // 清理空的代
-        let _ = fs::remove_dir_all(&gen_dir);
         return Ok(());
     }
 
-    manifest.push_str(&format!("{}\n", package_path.display()));
-    fs::write(&manifest_path, manifest).map_err(|e| format!("Failed to write manifest: {}", e))?;
-
-    // Create bin directory with symlinks
-    // 创建带有符号链接的 bin 目录
-    let bin_dir = gen_dir.join("bin");
-    fs::create_dir_all(&bin_dir).map_err(|e| format!("Failed to create bin directory: {}", e))?;
-
-    // Link binaries from the package
-    // 从软件包链接二进制文件
-    let pkg_bin = package_path.join("bin");
-    if pkg_bin.exists() {
-        for entry in
-            fs::read_dir(&pkg_bin).map_err(|e| format!("Failed to read package bin: {}", e))?
-        {
-            let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-            let src = entry.path();
-            let dst = bin_dir.join(entry.file_name());
-
-            if dst.exists() {
-                fs::remove_file(&dst)
-                    .map_err(|e| format!("Failed to remove existing symlink: {}", e))?;
-            }
-
-            symlink(&src, &dst).map_err(|e| format!("Failed to create symlink: {}", e))?;
-        }
+    packages.push(package_path.clone());
+    let generation = get_next_generation(profile_dir)?;
+    let gen_dir = create_profile_generation(profile_dir, store_dir, generation, &packages)?;
+    if let Err(error) = replace_current_link_atomically(&current_link, &gen_dir) {
+        return Err(clean_failed_generation(&gen_dir, error));
     }
-
-    // Update current symlink
-    // 更新当前符号链接
-    replace_current_link_atomically(&current_link, &gen_dir)?;
 
     output::success(&format!("Installed '{package}' to generation {generation}"));
     println!("  {package} -> {}", package_path.display());
-
     Ok(())
+}
+
+pub(super) fn load_current_packages(
+    profile_dir: &Path,
+    store_dir: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    let current_link = profile_dir.join("current");
+    let metadata = match fs::symlink_metadata(&current_link) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("Failed to inspect current link: {error}")),
+    };
+    if !metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Invalid current profile pointer '{}': expected a symlink",
+            current_link.display()
+        ));
+    }
+
+    let target =
+        fs::read_link(&current_link).map_err(|e| format!("Failed to read current link: {e}"))?;
+    let generation_dir = resolve_link_target(profile_dir, &target);
+    validate_generation(profile_dir, store_dir, &generation_dir)?;
+    read_manifest_packages(&generation_dir, store_dir)
+}
+
+pub(super) fn create_profile_generation(
+    profile_dir: &Path,
+    store_dir: &Path,
+    generation: u32,
+    packages: &[PathBuf],
+) -> Result<PathBuf, String> {
+    let generation_dir = profile_dir.join(format!("generation-{generation}"));
+    fs::create_dir(&generation_dir)
+        .map_err(|e| format!("Failed to reserve generation {generation}: {e}"))?;
+    if let Err(error) = populate_generation(&generation_dir, store_dir, packages) {
+        return Err(clean_failed_generation(&generation_dir, error));
+    }
+    Ok(generation_dir)
+}
+
+fn populate_generation(
+    generation_dir: &Path,
+    store_dir: &Path,
+    packages: &[PathBuf],
+) -> Result<(), String> {
+    for package in packages {
+        validate_store_package(store_dir, package)?;
+    }
+    let manifest = packages
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(generation_dir.join("manifest"), format!("{manifest}\n"))
+        .map_err(|e| format!("Failed to write generation manifest: {e}"))?;
+    create_bin_links(generation_dir, packages)
+}
+
+fn create_bin_links(generation_dir: &Path, packages: &[PathBuf]) -> Result<(), String> {
+    let links = collect_bin_links(packages)?;
+    let bin_dir = generation_dir.join("bin");
+    fs::create_dir(&bin_dir).map_err(|e| format!("Failed to create bin directory: {e}"))?;
+    for (name, target) in links {
+        let destination = bin_dir.join(name);
+        symlink(&target, &destination).map_err(|e| {
+            format!(
+                "Failed to create binary link '{}': {e}",
+                destination.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn collect_bin_links(
+    packages: &[PathBuf],
+) -> Result<BTreeMap<std::ffi::OsString, PathBuf>, String> {
+    let mut links = BTreeMap::new();
+    for package in packages {
+        let package_bin = package.join("bin");
+        match fs::symlink_metadata(&package_bin) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(format!(
+                    "Package bin '{}' is not a directory",
+                    package_bin.display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "Failed to inspect package bin '{}': {error}",
+                    package_bin.display()
+                ));
+            }
+        }
+        for entry in fs::read_dir(&package_bin).map_err(|e| {
+            format!(
+                "Failed to read package bin '{}': {e}",
+                package_bin.display()
+            )
+        })? {
+            let entry = entry.map_err(|e| format!("Failed to read package bin entry: {e}"))?;
+            let name = entry.file_name();
+            if links.insert(name.clone(), entry.path()).is_some() {
+                return Err(format!(
+                    "Binary '{}' is provided by multiple packages",
+                    name.to_string_lossy()
+                ));
+            }
+        }
+    }
+    Ok(links)
+}
+
+pub(super) fn read_manifest_packages(
+    generation_dir: &Path,
+    store_dir: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    let manifest_path = generation_dir.join("manifest");
+    let metadata = fs::symlink_metadata(&manifest_path).map_err(|error| {
+        format!(
+            "Failed to inspect manifest '{}': {error}",
+            manifest_path.display()
+        )
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(format!(
+            "Manifest '{}' is not a regular file",
+            manifest_path.display()
+        ));
+    }
+    let manifest = fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("Failed to read manifest '{}': {e}", manifest_path.display()))?;
+    let mut packages = Vec::new();
+    for line in manifest.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let package = PathBuf::from(line);
+        validate_store_package(store_dir, &package)?;
+        if packages.contains(&package) {
+            return Err(format!(
+                "Duplicate package entry in '{}'",
+                manifest_path.display()
+            ));
+        }
+        packages.push(package);
+    }
+    Ok(packages)
+}
+
+pub(super) fn validate_generation(
+    profile_dir: &Path,
+    store_dir: &Path,
+    generation_dir: &Path,
+) -> Result<(), String> {
+    validate_generation_location(profile_dir, generation_dir)?;
+    let packages = read_manifest_packages(generation_dir, store_dir)?;
+    let expected_links = collect_bin_links(&packages)?;
+    validate_generation_bin_links(generation_dir, &expected_links)
+}
+
+fn validate_generation_bin_links(
+    generation_dir: &Path,
+    expected_links: &BTreeMap<std::ffi::OsString, PathBuf>,
+) -> Result<(), String> {
+    let bin_dir = generation_dir.join("bin");
+    let metadata = fs::symlink_metadata(&bin_dir).map_err(|e| {
+        format!(
+            "Failed to inspect generation bin '{}': {e}",
+            bin_dir.display()
+        )
+    })?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Generation bin '{}' is not a directory",
+            bin_dir.display()
+        ));
+    }
+    let mut remaining = expected_links.clone();
+    for entry in fs::read_dir(&bin_dir)
+        .map_err(|e| format!("Failed to read generation bin '{}': {e}", bin_dir.display()))?
+    {
+        let entry = entry.map_err(|e| format!("Failed to read generation bin entry: {e}"))?;
+        let entry_path = entry.path();
+        let expected = remaining
+            .remove(&entry.file_name())
+            .ok_or_else(|| format!("Unexpected generation binary '{}'", entry_path.display()))?;
+        let target = fs::read_link(&entry_path).map_err(|e| {
+            format!(
+                "Invalid generation binary link '{}': {e}",
+                entry_path.display()
+            )
+        })?;
+        if target != expected {
+            return Err(format!(
+                "Generation binary link '{}' targets '{}' instead of '{}'",
+                entry_path.display(),
+                target.display(),
+                expected.display()
+            ));
+        }
+    }
+    if !remaining.is_empty() {
+        return Err("Generation is missing one or more binary links".to_string());
+    }
+    Ok(())
+}
+
+fn validate_generation_location(profile_dir: &Path, generation_dir: &Path) -> Result<(), String> {
+    let name = generation_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Invalid current generation path".to_string())?;
+    let is_generation = name
+        .strip_prefix("generation-")
+        .is_some_and(|number| number.parse::<u32>().is_ok());
+    if generation_dir.parent() != Some(profile_dir) || !is_generation {
+        return Err(format!(
+            "Invalid profile generation target '{}'",
+            generation_dir.display()
+        ));
+    }
+    let metadata = fs::symlink_metadata(generation_dir).map_err(|e| {
+        format!(
+            "Failed to inspect generation '{}': {e}",
+            generation_dir.display()
+        )
+    })?;
+    if !metadata.file_type().is_dir() {
+        return Err(format!(
+            "Profile generation '{}' is not a directory",
+            generation_dir.display()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_store_package(store_dir: &Path, package: &Path) -> Result<(), String> {
+    if package
+        .components()
+        .any(|part| matches!(part, Component::ParentDir))
+        || package.parent() != Some(store_dir)
+    {
+        return Err(format!(
+            "Manifest path '{}' is outside the store",
+            package.display()
+        ));
+    }
+    let metadata = fs::symlink_metadata(package).map_err(|e| {
+        format!(
+            "Failed to inspect store package '{}': {e}",
+            package.display()
+        )
+    })?;
+    if !metadata.file_type().is_dir() {
+        return Err(format!(
+            "Manifest package '{}' must be a real store directory",
+            package.display()
+        ));
+    }
+    let canonical_store = fs::canonicalize(store_dir)
+        .map_err(|e| format!("Failed to resolve store '{}': {e}", store_dir.display()))?;
+    let canonical_package = fs::canonicalize(package)
+        .map_err(|e| format!("Invalid manifest package '{}': {e}", package.display()))?;
+    if canonical_package.parent() != Some(canonical_store.as_path()) || !canonical_package.is_dir()
+    {
+        return Err(format!(
+            "Manifest package '{}' is not a store directory",
+            package.display()
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_link_target(parent: &Path, target: &Path) -> PathBuf {
+    if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        parent.join(target)
+    }
+}
+
+pub(super) fn clean_failed_generation(generation_dir: &Path, error: String) -> String {
+    match fs::remove_dir_all(generation_dir) {
+        Ok(()) => error,
+        Err(cleanup_error) => format!(
+            "{error}; failed to remove unpublished generation '{}': {cleanup_error}",
+            generation_dir.display()
+        ),
+    }
+}
+
+fn unique_nonce() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{}-{timestamp}", std::process::id())
 }
 
 /// Get the store directory.
 /// 获取存储目录。
-fn get_store_dir() -> PathBuf {
-    std::env::var("N3V3_STORE")
+pub(super) fn get_store_dir() -> PathBuf {
+    std::env::var_os("N3V3_STORE")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/n3v3/store"))
+        .unwrap_or_else(|| PathBuf::from("/n3v3/store"))
 }
 
-/// Get the profile directory.
-/// 获取配置目录。
-fn get_profile_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".n3v3").join("profile")
+/// Resolve the profile under HOME; never write to an arbitrary fallback directory.
+pub(super) fn get_profile_dir() -> Result<PathBuf, String> {
+    let home = std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .ok_or_else(|| "HOME must be set to locate the profile".to_string())?;
+    let home = PathBuf::from(home);
+    if !home.is_absolute() {
+        return Err(format!("HOME '{}' must be absolute", home.display()));
+    }
+    Ok(home.join(".n3v3").join("profile"))
 }
 
 /// Find a package in the store, with registry fallback.
@@ -234,7 +496,10 @@ fn logical_store_name(entry: &str) -> &str {
 
 /// Atomically replace the current generation symlink.
 /// 原子替换当前代符号链接。
-fn replace_current_link_atomically(link_path: &PathBuf, target: &PathBuf) -> Result<(), String> {
+pub(super) fn replace_current_link_atomically(
+    link_path: &PathBuf,
+    target: &PathBuf,
+) -> Result<(), String> {
     if link_path.is_dir() && !link_path.is_symlink() {
         return Err(format!(
             "Failed to update current link: path is a directory: {}",
@@ -256,21 +521,7 @@ fn replace_current_link_atomically(link_path: &PathBuf, target: &PathBuf) -> Res
         )
     })?;
 
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
-    let temp_link = parent.join(format!(".current.tmp-{}-{}", std::process::id(), nonce));
-
-    if temp_link.exists() || temp_link.is_symlink() {
-        fs::remove_file(&temp_link).map_err(|e| {
-            format!(
-                "Failed to clean temporary link '{}': {}",
-                temp_link.display(),
-                e
-            )
-        })?;
-    }
+    let temp_link = parent.join(format!(".current.tmp-{}", unique_nonce()));
 
     symlink(target, &temp_link).map_err(|e| {
         format!(
@@ -292,7 +543,7 @@ fn replace_current_link_atomically(link_path: &PathBuf, target: &PathBuf) -> Res
 
 /// Get the next generation number.
 /// 获取下一个代编号。
-fn get_next_generation(profile_dir: &PathBuf) -> Result<u32, String> {
+pub(super) fn get_next_generation(profile_dir: &Path) -> Result<u32, String> {
     let mut max_gen = 0;
 
     if profile_dir.exists() {
@@ -311,52 +562,30 @@ fn get_next_generation(profile_dir: &PathBuf) -> Result<u32, String> {
         }
     }
 
-    Ok(max_gen + 1)
+    max_gen
+        .checked_add(1)
+        .ok_or_else(|| "Profile generation number exhausted".to_string())
 }
 
 /// List installed packages.
 /// 列出已安装的软件包。
 pub fn list() -> Result<(), String> {
-    let profile_dir = get_profile_dir();
-    let current_link = profile_dir.join("current");
-
-    if !current_link.exists() {
+    let profile_dir = get_profile_dir()?;
+    let packages = load_current_packages(&profile_dir, &get_store_dir())?;
+    if packages.is_empty() {
         output::info("No packages installed");
         return Ok(());
     }
-
-    let current_gen =
-        fs::read_link(&current_link).map_err(|e| format!("Failed to read current link: {}", e))?;
-
-    let manifest_path = current_gen.join("manifest");
-    if !manifest_path.exists() {
-        output::info("No packages installed");
-        return Ok(());
-    }
-
-    let manifest = fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("Failed to read manifest: {}", e))?;
-
     output::header("Installed Packages");
-
     let mut table = output::Table::new(vec!["#", "Package"]);
-    let mut count = 0;
-
-    for line in manifest.lines() {
-        if !line.is_empty() {
-            count += 1;
-            // Extract package name from path
-            // 从路径中提取软件包名称
-            let name = PathBuf::from(line)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| line.to_string());
-            table.add_row(vec![&count.to_string(), &name]);
-        }
+    for (index, package) in packages.iter().enumerate() {
+        let name = package
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| package.display().to_string());
+        table.add_row(vec![&(index + 1).to_string(), &name]);
     }
-
     table.print();
-
     Ok(())
 }
 
@@ -403,5 +632,195 @@ mod tests {
         assert_eq!(fs::read_link(&current).unwrap(), target2);
 
         let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn install_two_packages_keeps_both_commands_and_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = temp.path().join("store");
+        let profile = temp.path().join("home/.n3v3/profile");
+        for name in ["pkg-a", "pkg-b"] {
+            let bin = store.join(name).join("bin");
+            fs::create_dir_all(&bin).unwrap();
+            fs::write(bin.join(name), format!("{name}\n")).unwrap();
+        }
+        install_at("pkg-a", &store, &profile).unwrap();
+        install_at("pkg-b", &store, &profile).unwrap();
+        let generation = fs::read_link(profile.join("current")).unwrap();
+        let packages = load_current_packages(&profile, &store).unwrap();
+        assert_eq!(packages, vec![store.join("pkg-a"), store.join("pkg-b")]);
+        for name in ["pkg-a", "pkg-b"] {
+            let link = generation.join("bin").join(name);
+            assert_eq!(
+                fs::read_link(&link).unwrap(),
+                store.join(name).join("bin").join(name)
+            );
+            assert_eq!(fs::read_to_string(link).unwrap(), format!("{name}\n"));
+        }
+    }
+
+    #[test]
+    fn install_binary_collision_preserves_current_and_no_partial_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = temp.path().join("store");
+        let profile = temp.path().join("home/.n3v3/profile");
+        for name in ["pkg-a", "pkg-b"] {
+            let bin = store.join(name).join("bin");
+            fs::create_dir_all(&bin).unwrap();
+            fs::write(bin.join("shared"), name).unwrap();
+        }
+        install_at("pkg-a", &store, &profile).unwrap();
+        let current = fs::read_link(profile.join("current")).unwrap();
+        assert!(
+            install_at("pkg-b", &store, &profile)
+                .unwrap_err()
+                .contains("multiple packages")
+        );
+        assert_eq!(fs::read_link(profile.join("current")).unwrap(), current);
+        assert!(!profile.join("generation-2").exists());
+        assert_eq!(
+            fs::read_to_string(current.join("bin/shared")).unwrap(),
+            "pkg-a"
+        );
+    }
+
+    #[test]
+    fn install_corrupt_current_manifest_fails_before_generation_creation() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = temp.path().join("store");
+        let profile = temp.path().join("home/.n3v3/profile");
+        fs::create_dir_all(store.join("pkg-a")).unwrap();
+        install_at("pkg-a", &store, &profile).unwrap();
+        let current = fs::read_link(profile.join("current")).unwrap();
+        fs::write(current.join("manifest"), "/outside-store/pkg\n").unwrap();
+        assert!(install_at("pkg-a", &store, &profile).is_err());
+        assert_eq!(fs::read_link(profile.join("current")).unwrap(), current);
+        assert!(!profile.join("generation-2").exists());
+    }
+
+    #[test]
+    fn create_profile_generation_existing_number_preserves_contents() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = temp.path().join("store");
+        let profile = temp.path().join("home/.n3v3/profile");
+        let existing = profile.join("generation-1");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("user-data"), "keep").unwrap();
+
+        assert!(create_profile_generation(&profile, &store, 1, &[]).is_err());
+        assert_eq!(
+            fs::read_to_string(existing.join("user-data")).unwrap(),
+            "keep"
+        );
+    }
+
+    #[test]
+    fn validate_generation_unexpected_binary_fails_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = temp.path().join("store");
+        let profile = temp.path().join("home/.n3v3/profile");
+        fs::create_dir_all(&profile).unwrap();
+        let generation = create_profile_generation(&profile, &store, 1, &[]).unwrap();
+        symlink("/outside/store", generation.join("bin/unexpected")).unwrap();
+
+        assert!(validate_generation(&profile, &store, &generation).is_err());
+    }
+
+    #[test]
+    fn install_store_alias_rejected_before_generation_publication() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_dir = temp.path().join("store");
+        let profile = temp.path().join("home/.n3v3/profile");
+        let store = Store::open_at(store_dir.clone()).unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("data"), "package").unwrap();
+        let package = store.add_dir(&source, "real").unwrap();
+        let real_path = store.to_path(&package);
+        symlink(&real_path, store_dir.join("alias")).unwrap();
+
+        let error = install_at("alias", &store_dir, &profile).unwrap_err();
+        assert!(error.contains("real store directory"), "{error}");
+        assert!(!profile.join("current").exists());
+        let mut gc_store = Store::open_at(store_dir).unwrap();
+        let mut gc = n3v3_store::GarbageCollector::new(&mut gc_store);
+        assert!(gc.dry_run().unwrap().contains(&package));
+        assert!(real_path.exists());
+    }
+
+    #[test]
+    fn install_waits_for_gc_lock_before_publishing_generation() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let temp = tempfile::tempdir().unwrap();
+        let store_dir = temp.path().join("store");
+        let profile = temp.path().join("home/.n3v3/profile");
+        fs::create_dir_all(store_dir.join("package")).unwrap();
+        let store = Store::open_at(store_dir.clone()).unwrap();
+        let lock = store.lock_profiles().unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let worker_store = store_dir.clone();
+        let worker_profile = profile.clone();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            finished_tx
+                .send(install_at("package", &worker_store, &worker_profile))
+                .unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            finished_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err()
+        );
+        assert!(!profile.join("current").exists());
+        drop(lock);
+        finished_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            load_current_packages(&profile, &store_dir).unwrap(),
+            vec![store_dir.join("package")]
+        );
+    }
+
+    #[test]
+    fn install_two_homes_gc_retains_both_profiles_and_old_generations() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_dir = temp.path().join("store");
+        let mut store = Store::open_at(store_dir.clone()).unwrap();
+        let mut packages = Vec::new();
+        for name in ["first", "second", "third"] {
+            let source = temp.path().join(name);
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("data"), name).unwrap();
+            packages.push(store.add_dir(&source, name).unwrap());
+        }
+        let garbage = store.add_content(b"unused", "unused").unwrap();
+        let profile_a = temp.path().join("home-a/.n3v3/profile");
+        let profile_b = temp.path().join("home-b/.n3v3/profile");
+        install_at(&packages[0].display_name(), &store_dir, &profile_a).unwrap();
+        install_at(&packages[1].display_name(), &store_dir, &profile_a).unwrap();
+        install_at(&packages[2].display_name(), &store_dir, &profile_b).unwrap();
+
+        let result = n3v3_store::GarbageCollector::new(&mut store)
+            .collect()
+            .unwrap();
+        assert_eq!(result.deleted, 1);
+        assert!(!store.path_exists(&garbage));
+        for package in &packages {
+            assert!(
+                store.path_exists(package),
+                "GC removed {}",
+                package.display_name()
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(profile_a.join("generation-1/manifest")).unwrap(),
+            format!("{}\n", store.to_path(&packages[0]).display())
+        );
     }
 }

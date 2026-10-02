@@ -4,10 +4,82 @@
 use crate::output;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
+
+const MAX_REQUEST_BODY_SIZE: usize = 10 * 1024 * 1024;
+const MAX_REQUEST_LINE_SIZE: usize = 8 * 1024;
+const MAX_HEADER_LINE_SIZE: usize = 8 * 1024;
+const MAX_HEADER_BYTES: usize = 64 * 1024;
+const MAX_HEADER_COUNT: usize = 100;
+const MAX_CONCURRENT_CONNECTIONS: usize = 64;
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_PACKAGE_NAME_LENGTH: usize = 128;
+const MAX_VERSION_LENGTH: usize = 128;
+const MAX_DESCRIPTION_LENGTH: usize = 16 * 1024;
+const MAX_DEPENDENCIES: usize = 1_024;
+const MAX_METADATA_VALUE_LENGTH: usize = 512;
+
+fn is_valid_package_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_PACKAGE_NAME_LENGTH
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn is_valid_cache_hash(hash: &str) -> bool {
+    !hash.is_empty()
+        && hash.len() <= MAX_PACKAGE_NAME_LENGTH
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn validate_version_metadata(metadata: &VersionMetadata) -> Result<(), &'static str> {
+    let version = metadata.version.as_bytes();
+    if version.is_empty()
+        || version.len() > MAX_VERSION_LENGTH
+        || !version
+            .iter()
+            .copied()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'_'))
+    {
+        return Err("invalid version");
+    }
+    if metadata.description.len() > MAX_DESCRIPTION_LENGTH {
+        return Err("description is too large");
+    }
+    if metadata.dependencies.len() > MAX_DEPENDENCIES {
+        return Err("too many dependencies");
+    }
+    if metadata.dependencies.iter().any(|(name, requirement)| {
+        !is_valid_package_name(name)
+            || requirement.is_empty()
+            || requirement.len() > MAX_METADATA_VALUE_LENGTH
+            || requirement.chars().any(char::is_control)
+    }) {
+        return Err("invalid dependency metadata");
+    }
+    let bounded_fields = [
+        metadata.nar_hash.as_deref(),
+        metadata.file_hash.as_deref(),
+        metadata.license.as_deref(),
+        metadata.published_at.as_deref(),
+    ];
+    if bounded_fields
+        .into_iter()
+        .flatten()
+        .any(|value| value.len() > MAX_METADATA_VALUE_LENGTH || value.chars().any(char::is_control))
+    {
+        return Err("invalid metadata field");
+    }
+    Ok(())
+}
 
 // =============================================================================
 // Registry v1 data model / 注册表 v1 数据模型
@@ -168,9 +240,7 @@ impl RegistryState {
 
 fn json_response(body: &str, status: &str) -> String {
     let len = body.len();
-    format!(
-        "{status}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nAccess-Control-Allow-Origin: *\r\n\r\n{body}"
-    )
+    format!("{status}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\n\r\n{body}")
 }
 
 fn ok_json(body: &str) -> String {
@@ -183,6 +253,13 @@ fn not_found_json(body: &str) -> String {
 
 fn bad_request(body: &str) -> String {
     json_response(body, "HTTP/1.1 400 Bad Request")
+}
+
+fn unauthorized() -> String {
+    json_response(
+        r#"{"error":"publish requires bearer authentication"}"#,
+        "HTTP/1.1 401 Unauthorized",
+    )
 }
 
 fn method_not_allowed() -> String {
@@ -250,6 +327,9 @@ fn handle_v1_search(query: &str, state: &RwLock<RegistryState>) -> String {
 }
 
 fn handle_v1_package(name: &str, state: &RwLock<RegistryState>) -> String {
+    if !is_valid_package_name(name) {
+        return bad_request(&serde_json::json!({"error": "invalid package name"}).to_string());
+    }
     let mut state = state.write().unwrap();
     match state.load_package(name) {
         Some(meta) => {
@@ -264,6 +344,9 @@ fn handle_v1_package(name: &str, state: &RwLock<RegistryState>) -> String {
 }
 
 fn handle_v1_package_version(name: &str, version: &str, state: &RwLock<RegistryState>) -> String {
+    if !is_valid_package_name(name) {
+        return bad_request(&serde_json::json!({"error": "invalid package name"}).to_string());
+    }
     let mut state = state.write().unwrap();
     match state.load_package(name) {
         Some(meta) => match meta.versions.iter().find(|v| v.version == version) {
@@ -286,75 +369,65 @@ fn handle_v1_package_version(name: &str, version: &str, state: &RwLock<RegistryS
 }
 
 fn handle_v1_publish(name: &str, body: &str, state: &RwLock<RegistryState>) -> String {
-    // Sanitize name
-    let safe_name: String = name
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
-
-    if safe_name.is_empty() || safe_name != name {
+    if !is_valid_package_name(name) {
         return bad_request(&serde_json::json!({"error": "invalid package name"}).to_string());
     }
+    if body.len() > MAX_REQUEST_BODY_SIZE {
+        return bad_request(&serde_json::json!({"error": "request body is too large"}).to_string());
+    }
 
-    // Parse the version metadata
-    let new_version: VersionMetadata = match serde_json::from_str(body) {
-        Ok(v) => v,
-        Err(e) => {
+    let version: VersionMetadata = match serde_json::from_str(body) {
+        Ok(version) => version,
+        Err(error) => {
             return bad_request(
-                &serde_json::json!({"error": format!("invalid request body: {e}")}).to_string(),
+                &serde_json::json!({"error": format!("invalid request body: {error}")}).to_string(),
             );
         }
     };
-
-    if new_version.version.is_empty() {
-        return bad_request(&serde_json::json!({"error": "version is required"}).to_string());
+    if let Err(error) = validate_version_metadata(&version) {
+        return bad_request(&serde_json::json!({"error": error}).to_string());
     }
+    save_published_version(name, version, state)
+}
 
+fn save_published_version(
+    name: &str,
+    mut version: VersionMetadata,
+    state: &RwLock<RegistryState>,
+) -> String {
     let mut state = state.write().unwrap();
-
-    // Load existing package or create new
-    let mut pkg = state
-        .load_package(&safe_name)
+    let mut package = state
+        .load_package(name)
         .cloned()
         .unwrap_or_else(|| PackageMetadata {
-            name: safe_name.clone(),
+            name: name.to_string(),
             versions: Vec::new(),
         });
-
-    // Check for duplicate version
-    if pkg
+    if package
         .versions
         .iter()
-        .any(|v| v.version == new_version.version)
+        .any(|existing| existing.version == version.version)
     {
-        return bad_request(
-            &serde_json::json!({"error": format!("version {} already exists", new_version.version)})
-                .to_string(),
-        );
+        let error = format!("version {} already exists", version.version);
+        return bad_request(&serde_json::json!({"error": error}).to_string());
     }
-
-    // Add timestamp
-    let mut version = new_version;
     if version.published_at.is_none() {
-        use std::time::SystemTime;
-        let ts = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        version.published_at = Some(format!("{ts}"));
+        version.published_at = Some(timestamp.to_string());
     }
+    package.versions.insert(0, version);
+    package.name = name.to_string();
 
-    // Insert in reverse order (newest first)
-    pkg.versions.insert(0, version);
-    pkg.name = safe_name.clone();
-
-    match state.save_package(pkg) {
+    match state.save_package(package) {
         Ok(()) => {
-            let body = serde_json::json!({"status": "published", "name": safe_name});
+            let body = serde_json::json!({"status": "published", "name": name});
             ok_json(&body.to_string())
         }
-        Err(e) => {
-            let body = serde_json::json!({"error": e});
+        Err(error) => {
+            let body = serde_json::json!({"error": error});
             json_response(&body.to_string(), "HTTP/1.1 500 Internal Server Error")
         }
     }
@@ -373,12 +446,10 @@ fn handle_legacy_packages_json(data_dir: &Path) -> String {
 }
 
 fn handle_legacy_package(data_dir: &Path, name: &str) -> String {
-    let safe_name: String = name
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
-        .collect();
-
-    let pkg_path = data_dir.join(format!("packages/{}.json", safe_name));
+    if !is_valid_package_name(name) {
+        return bad_request(&serde_json::json!({"error": "invalid package name"}).to_string());
+    }
+    let pkg_path = data_dir.join("packages").join(format!("{name}.json"));
     match fs::read_to_string(&pkg_path) {
         Ok(content) => ok_json(&content),
         Err(_) => {
@@ -404,10 +475,16 @@ fn parse_query_string(path: &str) -> (&str, HashMap<String, String>) {
     (base, params)
 }
 
+fn has_publish_access(authorization: Option<&str>, token: &str) -> bool {
+    authorization.and_then(|value| value.strip_prefix("Bearer ")) == Some(token)
+}
+
 fn route_request(
     method: &str,
     path: &str,
     body: &str,
+    authorization: Option<&str>,
+    token: &str,
     data_dir: &Path,
     state: &RwLock<RegistryState>,
 ) -> (String, Option<Vec<u8>>) {
@@ -446,6 +523,9 @@ fn route_request(
                     return (handle_v1_package(name, state), None);
                 }
                 if method == "POST" {
+                    if !has_publish_access(authorization, token) {
+                        return (unauthorized(), None);
+                    }
                     return (handle_v1_publish(name, body, state), None);
                 }
                 return (method_not_allowed(), None);
@@ -478,6 +558,9 @@ fn route_request(
             return (handle_legacy_package(data_dir, name), None);
         }
         if method == "POST" {
+            if !has_publish_access(authorization, token) {
+                return (unauthorized(), None);
+            }
             return (handle_v1_publish(name, body, state), None);
         }
         return (method_not_allowed(), None);
@@ -493,17 +576,10 @@ fn route_request(
 /// Serve a NAR archive file.
 /// 提供 NAR 归档文件。
 fn handle_nar_download(hash: &str, data_dir: &Path) -> (String, Option<Vec<u8>>) {
-    let safe_hash: String = hash
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
-        .take(128)
-        .collect();
-
-    if safe_hash.is_empty() {
+    if !is_valid_cache_hash(hash) {
         return (not_found_json(r#"{"error":"invalid nar hash"}"#), None);
     }
-
-    let nar_path = data_dir.join("nar").join(format!("{safe_hash}.nar"));
+    let nar_path = data_dir.join("nar").join(format!("{hash}.nar"));
     match fs::read(&nar_path) {
         Ok(data) => {
             let headers = binary_headers(data.len(), "application/x-nix-archive");
@@ -516,16 +592,10 @@ fn handle_nar_download(hash: &str, data_dir: &Path) -> (String, Option<Vec<u8>>)
 /// Serve a narinfo metadata file.
 /// 提供 narinfo 元数据文件。
 fn handle_narinfo(hash: &str, data_dir: &Path) -> String {
-    let safe_hash: String = hash
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
-        .collect();
-
-    if safe_hash.is_empty() || safe_hash.len() > 128 {
+    if !is_valid_cache_hash(hash) {
         return not_found_json(r#"{"error":"invalid narinfo hash"}"#);
     }
-
-    let narinfo_path = data_dir.join(format!("{safe_hash}.narinfo"));
+    let narinfo_path = data_dir.join(format!("{hash}.narinfo"));
     match fs::read_to_string(&narinfo_path) {
         Ok(content) => {
             let len = content.len();
@@ -540,90 +610,235 @@ fn handle_narinfo(hash: &str, data_dir: &Path) -> String {
     }
 }
 
-pub fn run(dir: &str, port: u16) -> Result<(), String> {
+fn read_bounded_line(
+    reader: &mut impl BufRead,
+    max_bytes: usize,
+    label: &str,
+) -> Result<String, String> {
+    let mut line = Vec::new();
+    reader
+        .take((max_bytes + 1) as u64)
+        .read_until(b'\n', &mut line)
+        .map_err(|error| format!("failed to read {label}: {error}"))?;
+    if line.len() > max_bytes {
+        return Err(format!("{label} exceeds {max_bytes} bytes"));
+    }
+    if !line.ends_with(b"\n") {
+        return Err(format!("incomplete {label}"));
+    }
+    String::from_utf8(line).map_err(|error| format!("{label} is not UTF-8: {error}"))
+}
+
+fn read_request(
+    reader: &mut impl BufRead,
+) -> Result<(String, String, String, Option<String>), String> {
+    let request_line = read_bounded_line(reader, MAX_REQUEST_LINE_SIZE, "request line")?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts
+        .next()
+        .ok_or_else(|| "request method is missing".to_string())?
+        .to_string();
+    let path = parts
+        .next()
+        .ok_or_else(|| "request path is missing".to_string())?
+        .to_string();
+
+    let mut content_length = 0usize;
+    let mut authorization = None;
+    let mut header_bytes = 0usize;
+    let mut header_count = 0usize;
+    loop {
+        let header_line = read_bounded_line(reader, MAX_HEADER_LINE_SIZE, "request header")?;
+        header_bytes += header_line.len();
+        if header_bytes > MAX_HEADER_BYTES {
+            return Err(format!("request headers exceed {MAX_HEADER_BYTES} bytes"));
+        }
+        let header = header_line.trim_end_matches(['\r', '\n']);
+        if header.is_empty() {
+            break;
+        }
+        header_count += 1;
+        if header_count > MAX_HEADER_COUNT {
+            return Err(format!("request headers exceed {MAX_HEADER_COUNT} entries"));
+        }
+        if let Some((name, value)) = header.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            content_length = value
+                .trim()
+                .parse()
+                .map_err(|error| format!("invalid Content-Length: {error}"))?;
+        }
+        if let Some((name, value)) = header.split_once(':')
+            && name.eq_ignore_ascii_case("authorization")
+        {
+            match authorization {
+                Some(_) => return Err("duplicate Authorization header".to_string()),
+                None => {
+                    authorization = Some(value.trim_start_matches([' ', '\t']).to_string());
+                }
+            }
+        }
+    }
+    if content_length > MAX_REQUEST_BODY_SIZE {
+        return Err(format!(
+            "request body exceeds {MAX_REQUEST_BODY_SIZE} bytes"
+        ));
+    }
+    let mut body = vec![0u8; content_length];
+    reader
+        .read_exact(&mut body)
+        .map_err(|error| format!("failed to read request body: {error}"))?;
+    let body =
+        String::from_utf8(body).map_err(|error| format!("request body is not UTF-8: {error}"))?;
+    Ok((method, path, body, authorization))
+}
+
+fn set_connection_timeouts(stream: &TcpStream) -> Result<(), String> {
+    stream
+        .set_read_timeout(Some(CONNECTION_TIMEOUT))
+        .map_err(|error| format!("failed to set registry connection read timeout: {error}"))?;
+    stream
+        .set_write_timeout(Some(CONNECTION_TIMEOUT))
+        .map_err(|error| format!("failed to set registry connection write timeout: {error}"))
+}
+
+fn handle_connection(
+    mut stream: TcpStream,
+    data_dir: &Path,
+    state: &RwLock<RegistryState>,
+    token: &str,
+) -> Result<(), String> {
+    set_connection_timeouts(&stream)?;
+    let (method, path, body, authorization) = {
+        let mut reader = BufReader::new(&mut stream);
+        read_request(&mut reader)?
+    };
+    let (headers, binary_body) = route_request(
+        &method,
+        &path,
+        &body,
+        authorization.as_deref(),
+        token,
+        data_dir,
+        state,
+    );
+    stream
+        .write_all(headers.as_bytes())
+        .map_err(|error| format!("failed to write response headers: {error}"))?;
+    if let Some(binary) = binary_body {
+        stream
+            .write_all(&binary)
+            .map_err(|error| format!("failed to write response body: {error}"))?;
+    }
+    Ok(())
+}
+
+fn bind_loopback(host: IpAddr, port: u16) -> Result<(SocketAddr, TcpListener), String> {
+    if !host.is_loopback() {
+        return Err(format!(
+            "refusing public registry bind {host}: use a loopback address"
+        ));
+    }
+    let address = SocketAddr::new(host, port);
+    let listener = TcpListener::bind(address)
+        .map_err(|error| format!("failed to bind to {address}: {error}"))?;
+    Ok((address, listener))
+}
+
+struct ConnectionPermit {
+    active: Arc<AtomicUsize>,
+}
+
+impl ConnectionPermit {
+    fn try_acquire(active: &Arc<AtomicUsize>) -> Option<Self> {
+        let mut count = active.load(Ordering::Acquire);
+        loop {
+            if count >= MAX_CONCURRENT_CONNECTIONS {
+                return None;
+            }
+            match active.compare_exchange_weak(
+                count,
+                count + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Some(Self {
+                        active: Arc::clone(active),
+                    });
+                }
+                Err(observed) => count = observed,
+            }
+        }
+    }
+}
+
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn require_registry_token(token: Option<String>) -> Result<String, String> {
+    let token = token.ok_or_else(|| {
+        "N3V3_REGISTRY_TOKEN must be set to serve or publish packages".to_string()
+    })?;
+    if token.is_empty()
+        || token.len() > MAX_HEADER_LINE_SIZE - "Authorization: Bearer \r\n".len()
+        || !token
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && byte != b',')
+    {
+        return Err(
+            "N3V3_REGISTRY_TOKEN must be a non-empty header-sized visible ASCII value (no commas)"
+                .to_string(),
+        );
+    }
+    Ok(token)
+}
+
+pub(super) fn read_registry_token() -> Result<String, String> {
+    require_registry_token(std::env::var("N3V3_REGISTRY_TOKEN").ok())
+}
+
+pub fn run(dir: &str, host: IpAddr, port: u16) -> Result<(), String> {
+    let token = Arc::new(read_registry_token()?);
+    let (address, listener) = bind_loopback(host, port)?;
     let data_dir = PathBuf::from(dir);
     fs::create_dir_all(&data_dir)
-        .map_err(|e| format!("failed to create registry directory: {e}"))?;
-
-    // Ensure v1 subdirectories exist
+        .map_err(|error| format!("failed to create registry directory: {error}"))?;
     fs::create_dir_all(data_dir.join("v1").join("packages"))
-        .map_err(|e| format!("failed to create v1 directories: {e}"))?;
-
+        .map_err(|error| format!("failed to create v1 directories: {error}"))?;
     let state = Arc::new(RwLock::new(RegistryState::load(&data_dir)));
+    let active = Arc::new(AtomicUsize::new(0));
 
-    let addr = format!("0.0.0.0:{port}");
-    let listener =
-        TcpListener::bind(&addr).map_err(|e| format!("failed to bind to {addr}: {e}"))?;
-
-    output::info(&format!("Registry server listening on http://{addr}"));
+    output::info(&format!("Registry server listening on http://{address}"));
     output::info(&format!("Serving packages from {}", data_dir.display()));
     output::info("API v1 endpoints available under /v1/");
 
     for stream in listener.incoming() {
         match stream {
-            Ok(mut stream) => {
+            Ok(stream) => {
+                let Some(permit) = ConnectionPermit::try_acquire(&active) else {
+                    output::warning("registry connection limit reached; dropping connection");
+                    continue;
+                };
                 let data_dir = data_dir.clone();
                 let state = state.clone();
-                std::thread::spawn(move || {
-                    let mut reader = BufReader::new(&mut stream);
-                    let mut request_line = String::new();
-                    if reader.read_line(&mut request_line).is_err() {
-                        return;
+                let token = Arc::clone(&token);
+                if let Err(error) = std::thread::Builder::new().spawn(move || {
+                    let _permit = permit;
+                    if let Err(error) = handle_connection(stream, &data_dir, &state, &token) {
+                        output::warning(&format!("request error: {error}"));
                     }
-
-                    let parts: Vec<&str> = request_line.split_whitespace().collect();
-                    if parts.len() < 2 {
-                        return;
-                    }
-
-                    let method = parts[0];
-                    let path = parts[1];
-
-                    // Read headers to find Content-Length for POST/PUT bodies
-                    let mut content_length = 0usize;
-                    loop {
-                        let mut header_line = String::new();
-                        if reader.read_line(&mut header_line).is_err() {
-                            break;
-                        }
-                        let trimmed = header_line.trim();
-                        if trimmed.is_empty() {
-                            break;
-                        }
-                        if let Some(len_str) = trimmed
-                            .to_lowercase()
-                            .strip_prefix("content-length:")
-                            .map(|s| s.trim())
-                        {
-                            content_length = len_str.parse().unwrap_or(0);
-                        }
-                    }
-
-                    // Read body if present
-                    let mut body = String::new();
-                    if content_length > 0 && content_length <= 10 * 1024 * 1024 {
-                        let mut buf = vec![0u8; content_length];
-                        use std::io::Read;
-                        let inner = reader.get_mut();
-                        if inner.read_exact(&mut buf).is_ok() {
-                            body = String::from_utf8_lossy(&buf).to_string();
-                        }
-                    }
-
-                    let (headers, binary_body) =
-                        route_request(method, path, &body, &data_dir, &state);
-                    let _ = stream.write_all(headers.as_bytes());
-                    if let Some(binary) = binary_body {
-                        let _ = stream.write_all(&binary);
-                    }
-                });
+                }) {
+                    output::warning(&format!("failed to spawn registry connection: {error}"));
+                }
             }
-            Err(e) => {
-                output::warning(&format!("connection error: {e}"));
-            }
+            Err(error) => output::warning(&format!("connection error: {error}")),
         }
     }
-
     Ok(())
 }
 
@@ -636,6 +851,285 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let state = RwLock::new(RegistryState::load(dir.path()));
         (dir, state)
+    }
+
+    fn route_http_request(
+        request: &str,
+        data_dir: &Path,
+        state: &RwLock<RegistryState>,
+        token: &str,
+    ) -> Result<String, String> {
+        let (method, path, body, authorization) =
+            read_request(&mut BufReader::new(request.as_bytes()))?;
+        Ok(route_request(
+            &method,
+            &path,
+            &body,
+            authorization.as_deref(),
+            token,
+            data_dir,
+            state,
+        )
+        .0)
+    }
+
+    #[test]
+    fn read_request_valid_route_and_body_remain_available() {
+        let request = b"POST /v1/packages/demo HTTP/1.1\r\nContent-Length: 2\r\n\r\nok";
+        let parsed = read_request(&mut BufReader::new(request.as_slice())).unwrap();
+        assert_eq!(
+            parsed,
+            ("POST".into(), "/v1/packages/demo".into(), "ok".into(), None)
+        );
+    }
+
+    #[test]
+    fn read_request_at_header_count_limit_is_accepted() {
+        let request = format!(
+            "GET /health HTTP/1.1\r\n{}\r\n",
+            "X-Key: value\r\n".repeat(MAX_HEADER_COUNT)
+        );
+        let parsed = read_request(&mut BufReader::new(request.as_bytes())).unwrap();
+        assert_eq!(parsed.1, "/health");
+    }
+
+    #[test]
+    fn read_request_overlong_request_line_is_rejected() {
+        let request = format!(
+            "GET /{} HTTP/1.1\r\n\r\n",
+            "x".repeat(MAX_REQUEST_LINE_SIZE)
+        );
+        let error = read_request(&mut BufReader::new(request.as_bytes())).unwrap_err();
+        assert!(error.contains("request line exceeds"));
+    }
+
+    #[test]
+    fn read_request_overlong_header_is_rejected() {
+        let request = format!(
+            "GET /health HTTP/1.1\r\nX-Long: {}\r\n\r\n",
+            "x".repeat(MAX_HEADER_LINE_SIZE)
+        );
+        let error = read_request(&mut BufReader::new(request.as_bytes())).unwrap_err();
+        assert!(error.contains("request header exceeds"));
+    }
+
+    #[test]
+    fn read_request_excess_total_header_bytes_are_rejected() {
+        let header = format!("X-Large: {}\r\n", "x".repeat(MAX_HEADER_LINE_SIZE / 2));
+        let request = format!(
+            "GET /health HTTP/1.1\r\n{}\r\n",
+            header.repeat(MAX_HEADER_BYTES / header.len() + 1)
+        );
+        let error = read_request(&mut BufReader::new(request.as_bytes())).unwrap_err();
+        assert!(error.contains("request headers exceed") && error.contains("bytes"));
+    }
+
+    #[test]
+    fn read_request_excess_header_count_is_rejected() {
+        let request = format!(
+            "GET /health HTTP/1.1\r\n{}\r\n",
+            "X-Key: value\r\n".repeat(MAX_HEADER_COUNT + 1)
+        );
+        let error = read_request(&mut BufReader::new(request.as_bytes())).unwrap_err();
+        assert!(error.contains("entries"));
+    }
+
+    #[test]
+    fn read_request_oversized_body_is_rejected_before_reading() {
+        let request = format!(
+            "POST /v1/packages/demo HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            MAX_REQUEST_BODY_SIZE + 1
+        );
+        let error = read_request(&mut BufReader::new(request.as_bytes())).unwrap_err();
+        assert!(error.contains("request body exceeds"));
+    }
+
+    #[test]
+    fn read_request_duplicate_authorization_is_rejected() {
+        let request = b"POST /v1/packages/demo HTTP/1.1\r\nAuthorization: Bearer one\r\nauthorization: Bearer two\r\n\r\n";
+        let error = read_request(&mut BufReader::new(request.as_slice())).unwrap_err();
+        assert_eq!(error, "duplicate Authorization header");
+    }
+
+    #[test]
+    fn read_request_oversized_authorization_is_rejected() {
+        let request = format!(
+            "POST /v1/packages/demo HTTP/1.1\r\nAuthorization: Bearer {}\r\n\r\n",
+            "x".repeat(MAX_HEADER_LINE_SIZE)
+        );
+        let error = read_request(&mut BufReader::new(request.as_bytes())).unwrap_err();
+        assert!(error.contains("request header exceeds"));
+    }
+
+    #[test]
+    fn set_connection_timeouts_stalled_peer_has_read_and_write_bounds() {
+        let (_address, listener) =
+            bind_loopback(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0).unwrap();
+        let _client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        set_connection_timeouts(&server).unwrap();
+        assert_eq!(server.read_timeout().unwrap(), Some(CONNECTION_TIMEOUT));
+        assert_eq!(server.write_timeout().unwrap(), Some(CONNECTION_TIMEOUT));
+    }
+
+    #[test]
+    fn connection_permit_limit_and_drop_release_slot() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let mut permits: Vec<_> = (0..MAX_CONCURRENT_CONNECTIONS)
+            .map(|_| ConnectionPermit::try_acquire(&active).unwrap())
+            .collect();
+        assert!(ConnectionPermit::try_acquire(&active).is_none());
+        assert_eq!(active.load(Ordering::Acquire), MAX_CONCURRENT_CONNECTIONS);
+        drop(permits.pop());
+        assert!(ConnectionPermit::try_acquire(&active).is_some());
+        drop(permits);
+        assert_eq!(active.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn bind_loopback_local_address_binds_locally() {
+        let (address, listener) =
+            bind_loopback(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0).unwrap();
+        assert!(address.ip().is_loopback());
+        assert!(listener.local_addr().unwrap().ip().is_loopback());
+    }
+
+    #[test]
+    fn bind_loopback_non_loopback_address_fails_closed() {
+        for host in [
+            IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+            IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1)),
+        ] {
+            let error = bind_loopback(host, 0).unwrap_err();
+            assert!(error.contains("refusing public registry bind"));
+        }
+    }
+
+    #[test]
+    fn require_registry_token_missing_or_invalid_fails_closed() {
+        assert!(require_registry_token(None).is_err());
+        for invalid in ["", " contains-space", "bad\r\nheader", "comma,value"] {
+            assert!(require_registry_token(Some(invalid.to_string())).is_err());
+        }
+        assert!(require_registry_token(Some("x".repeat(MAX_HEADER_LINE_SIZE))).is_err());
+    }
+
+    #[test]
+    fn publish_missing_or_wrong_authorization_does_not_mutate_state() {
+        let (dir, state) = test_state();
+        let token = std::process::id().to_string();
+        let body = r#"{"version":"1.0.0"}"#;
+        for (path, auth) in [
+            ("/v1/packages/demo", String::new()),
+            (
+                "/v1/packages/demo",
+                format!("Authorization: Bearer {token}-wrong\r\n"),
+            ),
+            (
+                "/v1/packages/demo",
+                format!("Authorization: Bearer {token} \r\n"),
+            ),
+            (
+                "/v1/packages/demo",
+                format!("Authorization: bearer {token}\r\n"),
+            ),
+            ("/packages/demo", String::new()),
+        ] {
+            let request = format!(
+                "POST {path} HTTP/1.1\r\nOrigin: http://untrusted.invalid\r\n{auth}Content-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let response = route_http_request(&request, dir.path(), &state, &token).unwrap();
+            assert!(response.starts_with("HTTP/1.1 401 Unauthorized"));
+            assert!(!response.contains("Access-Control-Allow-Origin"));
+            let index = route_http_request(
+                "GET /v1/index.json HTTP/1.1\r\n\r\n",
+                dir.path(),
+                &state,
+                &token,
+            )
+            .unwrap();
+            assert!(index.ends_with("\r\n\r\n[]"));
+            assert!(!dir.path().join("v1/index.json").exists());
+        }
+    }
+
+    #[test]
+    fn publish_correct_authorization_updates_state_and_get_remains_public() {
+        let (dir, state) = test_state();
+        let token = std::process::id().to_string();
+        let body = r#"{"version":"1.0.0"}"#;
+        let request = format!(
+            "POST /v1/packages/demo HTTP/1.1\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let response = route_http_request(&request, dir.path(), &state, &token).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(!response.contains("Access-Control-Allow-Origin"));
+        assert!(dir.path().join("v1/index.json").exists());
+        let response = route_http_request(
+            "GET /v1/packages/demo HTTP/1.1\r\n\r\n",
+            dir.path(),
+            &state,
+            &token,
+        )
+        .unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("1.0.0"));
+    }
+
+    #[test]
+    fn publish_valid_local_metadata_updates_registry() {
+        let (_dir, state) = test_state();
+        let metadata = serde_json::json!({
+            "name": "hello",
+            "version": "1.0.0",
+            "dependencies": {},
+            "description": "A local package",
+            "manifest": "name = \"hello\""
+        });
+        let response = handle_v1_publish("hello", &metadata.to_string(), &state);
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert_eq!(state.read().unwrap().index.len(), 1);
+    }
+
+    #[test]
+    fn publish_invalid_metadata_is_rejected_without_state_change() {
+        let (_dir, state) = test_state();
+        let invalid = serde_json::json!({
+            "version": "../1.0",
+            "dependencies": {},
+            "description": ""
+        });
+        let response = handle_v1_publish("hello", &invalid.to_string(), &state);
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+        assert!(state.read().unwrap().index.is_empty());
+    }
+
+    #[test]
+    fn package_read_rejects_invalid_name_without_loading_other_metadata() {
+        let (dir, state) = test_state();
+        let packages = dir.path().join("v1").join("packages");
+        std::fs::create_dir_all(&packages).unwrap();
+        std::fs::write(
+            dir.path().join("v1").join("index.json"),
+            "[{\"name\":\"private\",\"versions\":[],\"description\":\"secret\"}]",
+        )
+        .unwrap();
+        let response = handle_v1_package("..", &state);
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+        assert!(!response.contains("secret"));
+    }
+
+    #[test]
+    fn cache_hash_invalid_characters_do_not_alias_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("nar")).unwrap();
+        std::fs::write(dir.path().join("nar").join("abc.nar"), "archive").unwrap();
+        let (response, body) = handle_nar_download("abc?", dir.path());
+        assert!(response.starts_with("HTTP/1.1 404 Not Found"));
+        assert!(body.is_none());
     }
 
     #[test]

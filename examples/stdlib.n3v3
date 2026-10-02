@@ -1,14 +1,21 @@
-use std.list;
-use std.string;
-use std.Map;
-use std.Set;
+use std.list
 
-let nums = list.range(1, 4);
-let total = list.len(nums);
+use std.string
 
-let words = ["n3v3", "lang"];
-let joined = string.join(words, "-");
+use std.Map
 
-let m = Map.fromList([("a", 1), ("b", 2)]);
-let s = Set.fromList([1, 2, 2, 3]);
-let result = #{ total = total, joined = joined, mapSize = Map.size(m), setSize = Set.size(s) };
+use std.Set
+
+nums = list.range(1, 4)
+
+total = list.len(nums)
+
+words = ["n3v3", "lang"]
+
+joined = string.join(words, "-")
+
+m = Map.fromList([("a", 1), ("b", 2)])
+
+s = Set.fromList([1, 2, 2, 3])
+
+result = { total = total, joined = joined, mapSize = Map.size(m), setSize = Set.size(s) }

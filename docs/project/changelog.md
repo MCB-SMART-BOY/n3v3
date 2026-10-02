@@ -23,6 +23,12 @@ Based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [5.0.0] - 2026-10-03
+
+### Breaking
+- **AST API boundary**: Public syntax enums are now `#[non_exhaustive]`; downstream matches must include a wildcard arm.
+- **AST/HIR compatibility**: Unsupported future syntax is rejected or preserved as an explicit diagnostic node instead of silently degrading.
+
 ### Changed
 - **Breaking — project renamed to `n3v3`**: the CLI binary is `n3v3` (was `neve`), the crates are `n3v3-*` (was `neve-*`), environment variables are `N3V3_*` (was `NEVE_*`), and source files use the `.n3v3` extension — `.neve` is no longer accepted. The published package stays `n3v3`; the GitHub repository, docs, examples, CI, and editor integrations use the new name. On-disk state moves with the name (for example `~/.config/n3v3/` instead of `~/.config/neve/`).
 - **Lean formalization**: `formal/Neve/` → `formal/n3v3/` with the `n3v3.*` module prefix and the `n3v3Formal` lakefile package; `lake build` builds all 21 modules.
@@ -38,24 +44,23 @@ Based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Evaluator**: Deep non-tail recursion reports a diagnosable error instead of aborting the process with a native stack overflow; the evaluator measures the thread's available stack and keeps a 512 KiB reserve.
 - **LSP**: Semantic token positions and lengths use UTF-16 code units, so astral characters no longer shift later tokens on the line. The AST-token path no longer computes a dead offset, and its comment now matches the "whole-set fallback" behavior.
 
+- **Configuration activation**: generation publication includes immutable, hashed activation artifacts; switch and rollback activate the selected snapshot under a checked root, reject scripts, preserve prior file ownership, roll back partial filesystem changes, and restore the previous generation pointer on failure. Dry-run previews without changing `current` or `active`; rollback selects the nearest retained older generation even across numbering gaps.
+- **Store/cache trust boundaries**: NAR extraction rejects path traversal, symlinks, duplicate entries, invalid modes, truncation, and trailing data; binary-cache downloads enforce URL/path confinement plus declared file/NAR size and hash verification before publication.
+- **Package profiles and GC**: install/remove/rollback use validated generation manifests and binary links with atomic `current` publication; direct `add_file` / `add_dir` / `add_content` operations reject empty or multi-component names and register `PathInfo` plus discovered references. GC retains every valid profile generation, recursively follows registered store references, and aborts before deleting anything if a reachable ordinary store path has no metadata.
+- **CLI safety**: `init` refuses project-file collisions and cleans partial writes; `fmt --write` preserves shebangs and permission bits; the loopback-only built-in registry requires `N3V3_REGISTRY_TOKEN` for publishing and emits no wildcard CORS header.
+- **Examples**: all 25 `examples/**/*.n3v3` files are now canonical; the discovery and CI bootstrap examples no longer claim continuous watching or ignore failed subprocesses.
+- **CI/formal parity**: the generated fixed-seed differential suite now compares Rust evaluator results with the Lean evaluator and fails on either process errors or mismatches; the obsolete self-comparison script was removed.
+
 ### Tests
 - Replaced a tautological `io.defer` smoke assertion with real call-frame, cleanup-on-failure, and scope-isolation tests; added module-frame, thunk-frame, tail-chain ordering, and chain-failure cleanup coverage.
 - Replaced two tautological E2E assertions: the bytes-length case now reads a real temp file through `io.readFileBytesPath` and asserts `bytes.len(data) > 0`, and the retry case asserts both a clean type check and a successful HIR evaluation.
 - Added coverage for slash disambiguation (`6/2`, `total?/2`), thunk failure caching, method-call tail recursion, the evaluation stack budget, enum-variant name conflicts, and UTF-16 semantic token positions.
+- Added transactional activation, NAR/cache corruption, profile-generation/GC-root, init collision, formatter preservation, registry bind, and fixed differential cases covering the hardened boundaries.
 
 ### Docs
 - Syntax spec documents the slash disambiguation, the identifier character rule (ASCII start, Unicode continuation), and zero-parameter value bindings.
 - Skills synchronized with the checks above; `.claude/hooks/verify-skills.sh` now verifies the parser/AST/common source paths it previously let drift.
 - **Docs**: User/project documentation now reflects the v5.0.0 install flow, effect-checking output, public bindings, 554 E2E tests, 26 LSP methods, and 13 Stream<T> APIs.
-
-## [5.0.0] - 2026-09-24
-
-### Breaking
-- **AST API boundary**: Public syntax enums are now `#[non_exhaustive]`; downstream matches must include a wildcard arm.
-- **AST/HIR compatibility**: Unsupported future syntax is rejected or preserved as an explicit diagnostic node instead of silently degrading.
-
-### Changed
-- **Version bump**: Workspace and internal crate requirements 4.0.4 → 5.0.0.
 
 ## [4.0.4] - 2026-06-17
 

@@ -1,8 +1,11 @@
 //! The `n3v3 store` commands.
 //! `n3v3 store` 命令。
 
+use crate::commands::install::get_profile_dir;
 use crate::output;
 use n3v3_store::{Store, gc::GarbageCollector};
+use std::fs;
+use std::path::Path;
 
 /// Run garbage collection.
 /// 运行垃圾回收。
@@ -17,6 +20,8 @@ pub fn gc() -> Result<(), String> {
             return Err(format!("Failed to open store: {}", e));
         }
     };
+
+    register_profile_if_present(&store, &get_profile_dir()?)?;
 
     let mut gc = GarbageCollector::new(&mut store);
 
@@ -68,6 +73,28 @@ pub fn gc() -> Result<(), String> {
             Err(format!("Failed to collect garbage: {}", e))
         }
     }
+}
+
+fn register_profile_if_present(store: &Store, profile: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(profile) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "Failed to inspect profile '{}': {error}",
+                profile.display()
+            ));
+        }
+        Ok(_) => {}
+    }
+    let _lock = store
+        .lock_profiles()
+        .map_err(|error| format!("Failed to lock store '{}': {error}", store.root().display()))?;
+    store.register_profile(profile).map_err(|error| {
+        format!(
+            "Failed to register profile '{}': {error}",
+            profile.display()
+        )
+    })
 }
 
 /// Show store information.

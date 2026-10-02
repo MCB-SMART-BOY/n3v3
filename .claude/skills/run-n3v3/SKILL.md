@@ -99,10 +99,10 @@ cargo fmt --all -- --check
 
 ## Gotchas
 
-- **`n3v3 fmt file` outputs to stdout, does not modify the file.** Redirect
-  to a new file and move it back if you want in-place formatting.
-- **`n3v3 fmt check` returns non-zero exit on unformatted files.** This is
-  correct — it means "would reformat."
+- **`n3v3 fmt file` outputs to stdout unless `--write` is supplied.** In write
+  mode it replaces the file atomically and preserves a leading shebang plus
+  Unix permission bits. `n3v3 fmt check` returns non-zero for unformatted files;
+  this means "would reformat."
 - **`n3v3 check` rejects effectful calls by default.** Use
   `--allow-effects` to bypass purity checking. Only `Error` diagnostics make
   the command fail; warnings do not, and a clean check prints
@@ -123,7 +123,7 @@ cargo fmt --all -- --check
 | `cargo build` fails with "ssl" errors | `sudo apt-get install libssl-dev` |
 | `n3v3 lsp --check` reports missing grammar | Run `n3v3 setup helix` first |
 | REPL hangs with piped input | Use `printf` with explicit `:quit\n` terminator |
-| `n3v3 fmt check` fails after `n3v3 fmt file` | The file wasn't overwritten — redirect stdout |
+| `n3v3 fmt check` fails after printing formatted output | Use `n3v3 fmt file <path> --write`; stdout-only formatting does not modify the file |
 
 ## Driver
 

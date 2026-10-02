@@ -1,32 +1,35 @@
 #!/usr/bin/env n3v3
 -- CI bootstrap: checks formatting, clippy, builds, and tests the project
 -- CI 引导脚本：检查格式、clippy、构建和测试项目
-use std.io = io;
-use std.string = str;
+use std.io = io
+
+use std.string = str
 
 io.println("=== n3v3 CI Bootstrap ===");
 
 -- Helper: run a single CI step and report pass/fail
-let step = fn(name, cmd) {
-    io.print(str.concat("  [", name, "] ... "));
-    let result = io.execCommand(cmd);
-    if io.processSuccess(result) -> {
-        io.println("OK");
-        true
-    } else {
-        io.println("FAILED");
-        io.println(io.processStderr(result));
-        false
-    }
-};
+step = |name, cmd| {
+  io.print(str.concat("  [", name, "] ... "));
+  let result = io.execCommand(cmd);
+  if io.processSuccess(result) -> {
+    io.println("OK");
+    true
+  } else {
+    io.println("FAILED");
+    io.println(io.processStderr(result));
+    false
+  }
+}
 
 -- Run all steps sequentially, short-circuit on first failure
-let ok_fmt = step("fmt", io.command("cargo", ["fmt", "--all", "--", "--check"]));
-let ok_clippy = ok_fmt && step("clippy", io.command("cargo", ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]));
-let ok_build = ok_clippy && step("build", io.command("cargo", ["build", "--workspace"]));
-let ok_test = ok_build && step("test", io.command("cargo", ["test", "--workspace"]));
+ok_fmt = step("fmt", io.command("cargo", ["fmt", "--all", "--", "--check"]))
 
-if ok_test -> {
-    io.println("\n=== All CI steps passed ===");
-    0
-} else 1
+ok_clippy = ok_fmt && step("clippy", io.command("cargo", ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]))
+
+ok_build = ok_clippy && step("build", io.command("cargo", ["build", "--workspace"]))
+
+ok_test = ok_build && step("test", io.command("cargo", ["test", "--workspace"]))
+
+if ok_test -> io.println("\n=== All CI steps passed ===") else io.println("\n=== CI failed ===");
+
+assert(ok_test)

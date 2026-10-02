@@ -9,11 +9,7 @@ is_special(x: Int) -> Bool = match x {
   _ -> false,
 }
 
-type Color =  {
-  | Red
-  | Green
-  | Blue
-}
+type Color = | Red | Green | Blue;
 
 color_name(c: Color) -> String = match c {
   Red -> "red",
@@ -21,10 +17,7 @@ color_name(c: Color) -> String = match c {
   Blue -> "blue",
 }
 
-type Option =  {
-  | Some(Int)
-  | None
-}
+type Option = | Some(Int) | None;
 
 unwrap_or(opt: Option, default: Int) -> Int = match opt {
   Some(v) -> v,

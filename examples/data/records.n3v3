@@ -16,4 +16,4 @@ println(describe(person));
 
 team = { name = "n3v3 Team", lead = { name = "Bob", role = "architect" } }
 
-println(team.lead.name);
+println(team.lead.name)

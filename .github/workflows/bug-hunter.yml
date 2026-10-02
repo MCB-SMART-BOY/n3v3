@@ -238,7 +238,7 @@ jobs:
           lake build
 
       - name: Run generated differential tests / 运行生成差分测试
-        run: cargo run --release -p n3v3 --example gen_diff_test -- -n 50 -d 3
+        run: cargo run --release -p n3v3 --example gen_diff_test -- -n 50 -d 3 -s 42
 
   # ================================================================
   # 汇总报告 / Summary Report

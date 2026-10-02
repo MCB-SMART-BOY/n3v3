@@ -73,3 +73,13 @@ the bootstrap chain below is design intent, not shipped code.
 `examples/ci-bootstrap.n3v3` 是仓库中唯一的 bootstrap 示例：用 n3v3 驱动项目自身的
 CI 步骤（format、clippy、build、test）。早期的工具链包文件（`examples/bootstrap/*.n3v3`）
 已移除；下文的自举顺序属于设计意图，不是已交付的代码。
+
+## One-shot discovery demos / 单次发现演示
+
+`file-watcher.n3v3` performs one glob and reports the current file count; it
+does not keep watching. `test-runner.n3v3` discovers and lists test files; it
+does not execute them. Use `n3v3 test <dir>` for the shipped test runner.
+
+`file-watcher.n3v3` 只执行一次 glob 并报告当前文件数量，不会持续监控；
+`test-runner.n3v3` 只发现并列出测试文件，不执行测试。项目提供的测试运行器入口是
+`n3v3 test <dir>`。

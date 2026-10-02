@@ -1,16 +1,11 @@
 type UserId = Int;
 
-type Point =  {
+type Point = {
   x: Float,
   y: Float,
 };
 
-type Color =  {
-  | Red
-  | Green
-  | Blue
-  | RGB(Int, Int, Int)
-}
+type Color = | Red | Green | Blue | RGB(Int, Int, Int);
 
 add(x: Int, y: Int) -> Int = x + y
 

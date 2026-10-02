@@ -37,6 +37,12 @@ The registry is **Experimental** (internal validation). Server and client implem
 - **Protocol**: HTTP v1 API with JSON responses
 - **v1 routes**: `/v1/index.json`, `/v1/search`, `/v1/packages/<name>`, `/v1/packages/<name>/<version>`, `/v1/<hash>.narinfo`, `/v1/nar/<hash>.nar`; publishing uses `POST /v1/packages/<name>`
 - **Data model**: Index entries with version lists, per-version metadata with nar_hash and file_hash
+- **Exposure boundary**: built-in server only binds loopback addresses. Startup
+  requires a non-empty `N3V3_REGISTRY_TOKEN` (visible ASCII, no commas, within one
+  HTTP header line). `POST /v1/packages/<name>` requires exactly
+  `Authorization: Bearer <token>`; reads remain unauthenticated. The legacy
+  `POST /packages/<name>` route has the same requirement. No wildcard CORS
+  headers are sent. This is a local development/test tool, not a public service.
 
 ### Client (registry client library)
 - **Location**: `n3v3-cli/src/registry_client.rs`
@@ -102,8 +108,10 @@ Downloads a NAR archive by content hash.
 按内容哈希下载 NAR 归档。
 
 ### POST `/v1/packages/<name>`
-Publishes version metadata for a package.
-发布软件包版本元数据。
+Publishes version metadata for a package. Set the same `N3V3_REGISTRY_TOKEN` in
+the local server and `n3v3 registry-publish` process; the publisher sends the
+token in the `Authorization: Bearer <token>` header. The token is not printed.
+发布软件包版本元数据。服务端和发布客户端必须设置相同的本地令牌。
 
 ## Public Launch Plan / 公开启动计划
 
@@ -114,7 +122,8 @@ Publishes version metadata for a package.
 | Server implementation | Implemented | v1 API routes in `registry_serve.rs` |
 | Client implementation | Implemented | Index fetch, search, version resolution, and install integration |
 | Binary cache | Implemented | NAR signing and multi-cache support |
-| Local testing | Experimental | `n3v3 registry-serve` + `n3v3 package install` |
+| Local testing | Experimental | Loopback-only `n3v3 registry-serve` and `n3v3 registry-publish`; write routes require a shared local bearer token |
+| Authentication and TLS termination | Planned | Local token does not replace a TLS/auth gateway or dedicated server for public access |
 | Domain & hosting | Planned | `registry.n3v3.dev` setup |
 | Signing key generation | Planned | Production ed25519 keys |
 | Rate limiting | Planned | Per-IP throttling |
@@ -122,10 +131,11 @@ Publishes version metadata for a package.
 
 ### Planned: Public Beta
 
-1. Deploy server at `registry.n3v3.dev`
-2. Publish initial package set (core libraries and tools)
-3. Open package submission with review process
-4. Monitor for 4-6 weeks
+1. Implement or deploy authenticated publishing with TLS termination
+2. Add bounded concurrency and rate limiting appropriate for public traffic
+3. Deploy the dedicated service at `registry.n3v3.dev`
+4. Publish the initial reviewed package set
+5. Open package submission with a review process and monitor for 4-6 weeks
 
 ### Planned: General Availability
 
@@ -140,8 +150,23 @@ Publishes version metadata for a package.
 - **narinfo signing**: ed25519 signatures prevent cache poisoning
 - **Substitution**: Users control which caches to trust via `--cache-public-key`
 - **Upload signing**: Cache upload requires `--cache-private-key`
+- **Server exposure**: cache signatures do not authenticate package-publish HTTP
+  requests. The built-in server refuses non-loopback addresses and requires
+  `N3V3_REGISTRY_TOKEN` for writes, but local users/processes that can read the
+  token can publish. There is no HTTPS on the built-in server; public hosting
+  still requires a TLS/auth gateway or dedicated server, policy, and operational
+  controls. Do not expose the loopback server with a public port-forward.
 
 ## Configuration / 配置
+
+For local publishing, set a private token in both process environments (avoid
+committing it or placing it in shell history), start `n3v3 registry-serve`,
+then run `n3v3 registry-publish <package-dir> --registry-url http://127.0.0.1:<port>`.
+Use the server's actual port. The URL must be the registry base URL, without
+`/v1`; `registry-publish` posts to `/v1/packages/<name>`. Reads, including
+`package install`, do not need the token. Do not send this token to an
+untrusted URL; use a gateway with TLS and stronger access controls for remote
+deployments.
 
 ```bash
 # Environment variable

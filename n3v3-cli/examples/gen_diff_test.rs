@@ -1,13 +1,13 @@
-/// Run with: cargo run --example gen_diff_test -- [args]
-// Generates random n3v3 expressions, runs through Rust and Lean, compares.
-//
-// Compile: rustc scripts/gen-diff-test.rs -o /tmp/n3v3-gen-diff
-// Usage: ./scripts/gen-diff-test.rs [-n 100] [-d 4] [-s 42] [--effects]
+//! Generated Rust ↔ Lean differential evaluator.
+//!
+//! Run with:
+//! `cargo run --release -p n3v3 --example gen_diff_test -- -n 100 -d 4 -s 42`.
 use std::env;
-use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode};
 
-use std::path::PathBuf;
-use std::process::{Command, exit};
+use tempfile::Builder;
 
 // ============================================================
 // Simple xorshift64 RNG — zero dependencies
@@ -154,6 +154,36 @@ impl GenState {
     }
 }
 
+fn fixed_cases() -> Vec<(String, String)> {
+    [
+        ("1 + 2", "(Expr.binop BinOp.Add (Expr.lit_int 1) (Expr.lit_int 2))"),
+        (
+            "(3 + 4) * 2",
+            "(Expr.binop BinOp.Mul (Expr.binop BinOp.Add (Expr.lit_int 3) (Expr.lit_int 4)) (Expr.lit_int 2))",
+        ),
+        ("10 - 3", "(Expr.binop BinOp.Sub (Expr.lit_int 10) (Expr.lit_int 3))"),
+        (
+            "1 == 1",
+            "(Expr.binop BinOp.Eq (Expr.lit_int 1) (Expr.lit_int 1))",
+        ),
+        (
+            "1 == 2",
+            "(Expr.binop BinOp.Eq (Expr.lit_int 1) (Expr.lit_int 2))",
+        ),
+        (
+            "true && false",
+            "(Expr.binop BinOp.And (Expr.lit_bool true) (Expr.lit_bool false))",
+        ),
+        (
+            "false || true",
+            "(Expr.binop BinOp.Or (Expr.lit_bool false) (Expr.lit_bool true))",
+        ),
+    ]
+    .into_iter()
+    .map(|(source, lean)| (source.to_string(), lean.to_string()))
+    .collect()
+}
+
 // ============================================================
 // Test runner
 // ============================================================
@@ -184,108 +214,57 @@ fn formal_dir() -> PathBuf {
     project_dir().join("formal")
 }
 
-fn run_rust(n3v3_source: &str) -> String {
+fn format_process_failure(prefix: &str, result: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    format!(
+        "{prefix}(status={}): stdout={:?}; stderr={:?}",
+        result.status,
+        stdout.trim(),
+        stderr.trim()
+    )
+}
+
+fn run_rust(n3v3_source: &str, temp_dir: &Path) -> String {
     // Effect tests call `io.*` builtins; the module binding is part of the
     // program, so prepend it here instead of repeating it in every generated
     // source string. Without it the run fails with an unresolved `io` and the
     // suite only sees empty stdout.
     // 效果测试调用 `io.*` 内建，模块绑定属于程序本身：在此统一补上，避免每段生成源码
     // 各自重复。缺少它时求值报未解析的 `io`，套件只能看到空 stdout。
-    let source = format!("use std.io as io;\n{n3v3_source}");
-    let tmp = env::temp_dir().join(format!("gen_diff_{}.n3v3", std::process::id()));
-    fs::write(&tmp, source).expect("write tempfile");
+    let source = format!("use std.io = io;\n{n3v3_source}");
+    let mut tmp = Builder::new()
+        .suffix(".n3v3")
+        .tempfile_in(temp_dir)
+        .expect("create temporary n3v3 input");
+    tmp.write_all(source.as_bytes()).expect("write n3v3 input");
 
     let bin = n3v3_bin();
     let output = if bin.file_name().is_some_and(|n| n == "n3v3") {
-        Command::new(&bin)
-            .args(["run", tmp.to_str().unwrap()])
-            .output()
+        Command::new(&bin).arg("run").arg(tmp.path()).output()
     } else {
         Command::new("cargo")
-            .args([
-                "run",
-                "-q",
-                "-p",
-                "n3v3",
-                "--",
-                "run",
-                tmp.to_str().unwrap(),
-            ])
+            .args(["run", "-q", "-p", "n3v3", "--", "run"])
+            .arg(tmp.path())
             .output()
     };
-    let _ = fs::remove_file(&tmp);
 
     match output {
-        Ok(o) => String::from_utf8_lossy(&o.stdout)
+        Ok(result) if result.status.success() => String::from_utf8_lossy(&result.stdout)
             .trim()
             .trim_start_matches("[OK] ")
             .trim_start_matches("\u{2713} ")
             .to_string(),
-        Err(e) => format!("RUST_ERR: {e}"),
+        Ok(result) => format_process_failure("RUST_ERR", &result),
+        Err(error) => format!("RUST_ERR: {error}"),
     }
 }
 
-fn run_lean(lean_exprs: &[String], _test_names: &[String]) -> Vec<String> {
+fn run_lean(lean_exprs: &[String], _test_names: &[String], temp_dir: &Path) -> Vec<String> {
     let mut lean_code = String::from(
-        r#"import n3v3.Spec.Syntax
+        r#"import n3v3.Tests.Eval
 set_option maxRecDepth 100000
-open n3v3 (Ty Expr Value BinOp Pattern Effect)
-
-partial def eval (env : List (String × Value)) : Expr → Value
-  | Expr.lit_int n => Value.int n
-  | Expr.lit_float f => Value.float f
-  | Expr.lit_bool b => Value.bool b
-  | Expr.lit_char c => Value.char c
-  | Expr.lit_string s => Value.string s
-  | Expr.lit_unit => Value.unit
-  | Expr.var _ => Value.unit
-  | Expr.lam x body => Value.closure x body env
-  | Expr.app f arg =>
-      match eval env f with
-      | Value.closure x body env' =>
-          let varg := eval env arg
-          eval ((x, varg) :: env') body
-      | _ => Value.unit
-  | Expr.letIn x val body =>
-      let vval := eval env val
-      eval ((x, vval) :: env) body
-  | Expr.binop BinOp.Add l r =>
-      match eval env l, eval env r with
-      | Value.int n, Value.int m => Value.int (n + m)
-      | _, _ => Value.unit
-  | Expr.binop BinOp.Sub l r =>
-      match eval env l, eval env r with
-      | Value.int n, Value.int m => Value.int (n - m)
-      | _, _ => Value.unit
-  | Expr.binop BinOp.Mul l r =>
-      match eval env l, eval env r with
-      | Value.int n, Value.int m => Value.int (n * m)
-      | _, _ => Value.unit
-  | Expr.binop BinOp.Eq l r =>
-      let vl := eval env l
-      let vr := eval env r
-      Value.bool (vl == vr)
-  | Expr.binop BinOp.And l r =>
-      match eval env l with
-      | Value.bool false => Value.bool false
-      | Value.bool true => eval env r
-      | _ => Value.unit
-  | Expr.binop BinOp.Or l r =>
-      match eval env l with
-      | Value.bool true => Value.bool true
-      | Value.bool false => eval env r
-      | _ => Value.unit
-  | _ => Value.unit
-
-def evalClosed (e : Expr) : Value := eval [] e
-
-def fmt (v : Value) : String :=
-  match v with
-  | Value.int n => toString n
-  | Value.bool true => "true"
-  | Value.bool false => "false"
-  | Value.unit => "()"
-  | _ => "<complex>"
+open n3v3 (Expr BinOp)
 
 def main : IO Unit := do
 "#,
@@ -296,23 +275,30 @@ def main : IO Unit := do
     }
     lean_code.push_str("  pure ()\n");
 
-    let tmp = env::temp_dir().join(format!("gen_lean_{}.lean", std::process::id()));
-    fs::write(&tmp, &lean_code).expect("write lean");
+    let mut tmp = Builder::new()
+        .suffix(".lean")
+        .tempfile_in(temp_dir)
+        .expect("create temporary Lean input");
+    tmp.write_all(lean_code.as_bytes())
+        .expect("write Lean input");
 
     let output = Command::new("lake")
-        .args(["env", "lean", "--run", tmp.to_str().unwrap()])
+        .args(["env", "lean", "--run"])
+        .arg(tmp.path())
         .current_dir(formal_dir())
         .output();
-    let _ = fs::remove_file(&tmp);
 
     match output {
-        Ok(o) => String::from_utf8_lossy(&o.stdout)
+        Ok(result) if result.status.success() => String::from_utf8_lossy(&result.stdout)
             .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty() && !l.starts_with("warning:") && !l.contains("(interpreter)"))
-            .map(|l| l.to_string())
+            .map(|line| line.trim())
+            .filter(|line| {
+                !line.is_empty() && !line.starts_with("warning:") && !line.contains("(interpreter)")
+            })
+            .map(|line| line.to_string())
             .collect(),
-        Err(e) => vec![format!("LEAN_ERR: {e}")],
+        Ok(result) => vec![format_process_failure("LEAN_ERR", &result)],
+        Err(error) => vec![format!("LEAN_ERR: {error}")],
     }
 }
 
@@ -354,13 +340,13 @@ fn generate_effects_tests(n: usize, seed: u64) -> Vec<EffectTest> {
     tests
 }
 
-fn run_effects_suite(n: usize, seed: u64) -> (usize, usize) {
+fn run_effects_suite(n: usize, seed: u64, temp_dir: &Path) -> (usize, usize) {
     println!("\nGenerating {n} effects tests (seed={seed})");
     let tests = generate_effects_tests(n, seed);
     let mut passed = 0;
     let mut failed = 0;
     for (i, t) in tests.iter().enumerate() {
-        let output = run_rust(&t.src);
+        let output = run_rust(&t.src, temp_dir);
         if output.contains(&t.expected) || output == t.expected {
             passed += 1;
             if i % 10 == 0 && i > 0 {
@@ -388,7 +374,7 @@ fn run_effects_suite(n: usize, seed: u64) -> (usize, usize) {
 // Main
 // ============================================================
 
-fn main() {
+fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     let mut n_tests = 50usize;
     let mut depth = 3usize;
@@ -430,29 +416,37 @@ fn main() {
             .unwrap_or(42)
     });
 
+    let temp_dir = tempfile::tempdir().expect("create private temporary directory");
     if effects {
-        let (_, f) = run_effects_suite(n_tests, seed);
-        if f > 0 {
-            exit(1);
-        }
-        return;
+        let (_, f) = run_effects_suite(n_tests, seed, temp_dir.path());
+        return if f > 0 {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        };
     }
 
     let mut state = GenState::new(seed);
     println!("Generating {n_tests} tests (depth={depth}, seed={seed})");
 
-    let mut n3v3_sources = Vec::new();
-    let mut lean_exprs = Vec::new();
-    let mut test_names = Vec::new();
-    for i in 0..n_tests {
-        if i % 25 == 0 && i > 0 {
-            println!("  Generated {i}/{n_tests}...");
+    let mut n3v3_sources = Vec::with_capacity(n_tests);
+    let mut lean_exprs = Vec::with_capacity(n_tests);
+    for (n3v3_expr, lean_expr) in fixed_cases().into_iter().take(n_tests) {
+        n3v3_sources.push(n3v3_expr);
+        lean_exprs.push(lean_expr);
+    }
+    while n3v3_sources.len() < n_tests {
+        let generated = n3v3_sources.len();
+        if generated % 25 == 0 {
+            println!("  Generated {generated}/{n_tests}...");
         }
         let (n3v3_expr, lean_expr) = state.gen_expr(depth);
         n3v3_sources.push(n3v3_expr);
         lean_exprs.push(lean_expr);
-        test_names.push(format!("test_{i}"));
     }
+    let test_names = (0..n_tests)
+        .map(|index| format!("test_{index}"))
+        .collect::<Vec<_>>();
     println!("  Generated {n_tests}/{n_tests} expressions");
 
     println!("Running Rust evaluator...");
@@ -461,12 +455,12 @@ fn main() {
         if i % 25 == 0 && i > 0 {
             println!("  Rust: {i}/{n_tests}...");
         }
-        rust_results.push(run_rust(src));
+        rust_results.push(run_rust(src, temp_dir.path()));
     }
     println!("  Rust: {n_tests}/{n_tests} done");
 
     println!("Running Lean evaluator...");
-    let lean_results = run_lean(&lean_exprs, &test_names);
+    let lean_results = run_lean(&lean_exprs, &test_names, temp_dir.path());
     println!("  Lean: {} results", lean_results.len());
 
     let mut passed = 0;
@@ -505,6 +499,8 @@ fn main() {
     println!("  {msg}");
     println!("{}", "=".repeat(50));
     if passed != n_tests {
-        exit(1);
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
