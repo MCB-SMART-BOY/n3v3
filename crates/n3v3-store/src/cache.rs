@@ -3589,18 +3589,19 @@ mod tests {
     #[test]
     fn test_fetch_hash_mismatch_does_not_register_metadata() {
         let temp = tempfile::TempDir::new().unwrap();
-        let store_root = temp.path().join("store");
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let store_root = root.join("store");
         let store = Store::open_at(store_root.clone()).unwrap();
         let mut cache = BinaryCache::new(store).unwrap();
 
-        let source = temp.path().join("source-hash-mismatch.txt");
+        let source = root.join("source-hash-mismatch.txt");
         fs::write(&source, b"hello-hash-mismatch").unwrap();
 
         let nar_data = nar::create_nar(&source).unwrap();
         let nar_hash = Hash::of(&nar_data);
         let mut compressed = Vec::new();
         lzma_rs::xz_compress(&mut std::io::Cursor::new(&nar_data), &mut compressed).unwrap();
-        let nar_file = temp.path().join("payload-hash-mismatch.nar.xz");
+        let nar_file = root.join("payload-hash-mismatch.nar.xz");
         fs::write(&nar_file, &compressed).unwrap();
 
         let wrong_store_path = StorePath::new(Hash::of(b"wrong-store-path"), "pkg-1.0".to_string());
@@ -3696,15 +3697,16 @@ mod tests {
     #[test]
     fn fetch_compressed_size_mismatch_discards_bad_copy_before_retry() {
         let temp = tempfile::TempDir::new().unwrap();
-        let source = temp.path().join("source");
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let source = root.join("source");
         fs::write(&source, b"retry payload").unwrap();
         let nar_data = nar::create_nar(&source).unwrap();
         let mut compressed = Vec::new();
         lzma_rs::xz_compress(&mut std::io::Cursor::new(&nar_data), &mut compressed).unwrap();
-        let archive = temp.path().join("archive.nar.xz");
+        let archive = root.join("archive.nar.xz");
         fs::write(&archive, b"bad").unwrap();
         let path = StorePath::new(nar::hash_path(&source).unwrap(), "package".to_string());
-        let store = Store::open_at(temp.path().join("store")).unwrap();
+        let store = Store::open_at(root.join("store")).unwrap();
         let mut cache = BinaryCache::new(store).unwrap();
         let cached = CachedPath {
             path: path.clone(),
@@ -3810,12 +3812,13 @@ mod tests {
     #[test]
     fn fetch_when_atomic_publication_unavailable_rejects_without_store_entry() {
         let temp = tempfile::tempdir().unwrap();
-        let source = temp.path().join("source");
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let source = root.join("source");
         fs::write(&source, b"verified payload").unwrap();
         let nar_data = nar::create_nar(&source).unwrap();
-        let archive = temp.path().join("payload.nar");
+        let archive = root.join("payload.nar");
         fs::write(&archive, &nar_data).unwrap();
-        let store_root = temp.path().join("store");
+        let store_root = root.join("store");
         let mut cache = BinaryCache::new(Store::open_at(store_root.clone()).unwrap()).unwrap();
         let path = StorePath::new(nar::hash_path(&source).unwrap(), "package".to_string());
         let cached = CachedPath {

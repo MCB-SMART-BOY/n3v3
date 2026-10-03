@@ -577,7 +577,8 @@ mod tests {
     #[test]
     fn test_nar_regular_file() {
         let temp = TempDir::new().unwrap();
-        let file_path = temp.path().join("test.txt");
+        let root = temp.path().canonicalize().unwrap();
+        let file_path = root.join("test.txt");
         fs::write(&file_path, b"Hello, NAR!").unwrap();
 
         // Create NAR
@@ -586,7 +587,8 @@ mod tests {
 
         // Extract NAR
         let extract_dir = TempDir::new().unwrap();
-        let extract_path = extract_dir.path().join("extracted.txt");
+        let extract_root = extract_dir.path().canonicalize().unwrap();
+        let extract_path = extract_root.join("extracted.txt");
         extract_nar(&nar_data, &extract_path).unwrap();
 
         // Verify contents
@@ -598,7 +600,8 @@ mod tests {
     #[test]
     fn test_nar_executable_file() {
         let temp = TempDir::new().unwrap();
-        let file_path = temp.path().join("script.sh");
+        let root = temp.path().canonicalize().unwrap();
+        let file_path = root.join("script.sh");
         fs::write(&file_path, b"#!/bin/sh\necho hello").unwrap();
 
         // Make executable
@@ -608,7 +611,8 @@ mod tests {
         let nar_data = create_nar(&file_path).unwrap();
 
         let extract_dir = TempDir::new().unwrap();
-        let extract_path = extract_dir.path().join("script.sh");
+        let extract_root = extract_dir.path().canonicalize().unwrap();
+        let extract_path = extract_root.join("script.sh");
         extract_nar(&nar_data, &extract_path).unwrap();
 
         // Verify executable bit
@@ -619,7 +623,8 @@ mod tests {
     #[test]
     fn test_nar_directory() {
         let temp = TempDir::new().unwrap();
-        let dir_path = temp.path().join("mydir");
+        let root = temp.path().canonicalize().unwrap();
+        let dir_path = root.join("mydir");
         fs::create_dir(&dir_path).unwrap();
         fs::write(dir_path.join("a.txt"), b"File A").unwrap();
         fs::write(dir_path.join("b.txt"), b"File B").unwrap();
@@ -632,7 +637,8 @@ mod tests {
         let nar_data = create_nar(&dir_path).unwrap();
 
         let extract_dir = TempDir::new().unwrap();
-        let extract_path = extract_dir.path().join("extracted");
+        let extract_root = extract_dir.path().canonicalize().unwrap();
+        let extract_path = extract_root.join("extracted");
         extract_nar(&nar_data, &extract_path).unwrap();
 
         // Verify structure
@@ -655,17 +661,19 @@ mod tests {
     #[test]
     fn test_nar_symlink() {
         let temp = TempDir::new().unwrap();
-        let file_path = temp.path().join("target.txt");
+        let root = temp.path().canonicalize().unwrap();
+        let file_path = root.join("target.txt");
         fs::write(&file_path, b"Target content").unwrap();
 
-        let link_path = temp.path().join("link.txt");
+        let link_path = root.join("link.txt");
         std::os::unix::fs::symlink("target.txt", &link_path).unwrap();
 
         // Create NAR of the symlink
         let nar_data = create_nar(&link_path).unwrap();
 
         let extract_dir = TempDir::new().unwrap();
-        let extract_path = extract_dir.path().join("extracted_link");
+        let extract_root = extract_dir.path().canonicalize().unwrap();
+        let extract_path = extract_root.join("extracted_link");
         extract_nar(&nar_data, &extract_path).unwrap();
 
         // Verify it's a symlink pointing to the right target
@@ -714,7 +722,8 @@ mod tests {
     #[test]
     fn test_nar_path_traversal_prevention() {
         let dir = tempfile::tempdir().unwrap();
-        let src = dir.path().join("src");
+        let root = dir.path().canonicalize().unwrap();
+        let src = root.join("src");
         // Create a directory tree with various entry types
         std::fs::create_dir_all(src.join("sub")).unwrap();
         std::fs::write(src.join("sub").join("safe.txt"), b"safe").unwrap();
@@ -722,7 +731,7 @@ mod tests {
 
         // Normal roundtrip should succeed
         let nar_data = create_nar(&src).unwrap();
-        let out = dir.path().join("out");
+        let out = root.join("out");
         extract_nar(&nar_data, &out).unwrap();
         assert!(out.join("sub").join("safe.txt").exists());
         assert!(out.join("root.txt").exists());
@@ -732,7 +741,7 @@ mod tests {
         );
 
         // Corrupted/malformed NAR input should error
-        let result = extract_nar(b"not a valid NAR archive", &dir.path().join("bad"));
+        let result = extract_nar(b"not a valid NAR archive", &root.join("bad"));
         assert!(result.is_err());
 
         // The path traversal guard in extract_directory checks for:
@@ -743,9 +752,10 @@ mod tests {
     #[test]
     fn extract_duplicate_directory_name_returns_error() {
         let temp = TempDir::new().unwrap();
+        let root = temp.path().canonicalize().unwrap();
         let archive = directory_archive(&[("same", b"first"), ("same", b"second")]);
 
-        let error = extract_nar(&archive, &temp.path().join("out")).unwrap_err();
+        let error = extract_nar(&archive, &root.join("out")).unwrap_err();
 
         assert!(matches!(error, NarError::InvalidFormat(message) if message.contains("duplicate")));
     }
@@ -765,9 +775,9 @@ mod tests {
         .enumerate()
         {
             let temp = TempDir::new().unwrap();
+            let root = temp.path().canonicalize().unwrap();
             let archive = directory_archive(&[(name, b"payload")]);
-            let error =
-                extract_nar(&archive, &temp.path().join(format!("out-{index}"))).unwrap_err();
+            let error = extract_nar(&archive, &root.join(format!("out-{index}"))).unwrap_err();
             assert!(matches!(error, NarError::PathTraversal), "name: {name:?}");
         }
     }
@@ -775,8 +785,9 @@ mod tests {
     #[test]
     fn extract_existing_destination_does_not_clobber_content() {
         let temp = TempDir::new().unwrap();
-        let source = temp.path().join("source");
-        let destination = temp.path().join("destination");
+        let root = temp.path().canonicalize().unwrap();
+        let source = root.join("source");
+        let destination = root.join("destination");
         fs::write(&source, b"replacement").unwrap();
         fs::write(&destination, b"original").unwrap();
         let archive = create_nar(&source).unwrap();
@@ -788,12 +799,13 @@ mod tests {
     #[test]
     fn extract_archive_with_trailing_data_returns_error() {
         let temp = TempDir::new().unwrap();
-        let source = temp.path().join("source");
+        let root = temp.path().canonicalize().unwrap();
+        let source = root.join("source");
         fs::write(&source, b"payload").unwrap();
         let mut archive = create_nar(&source).unwrap();
         archive.push(0);
 
-        let error = extract_nar(&archive, &temp.path().join("destination")).unwrap_err();
+        let error = extract_nar(&archive, &root.join("destination")).unwrap_err();
         assert!(matches!(error, NarError::InvalidFormat(message) if message.contains("trailing")));
     }
 
@@ -801,9 +813,10 @@ mod tests {
     #[test]
     fn extract_parent_symlink_does_not_escape_destination() {
         let temp = TempDir::new().unwrap();
-        let source = temp.path().join("source");
-        let outside = temp.path().join("outside");
-        let parent_link = temp.path().join("parent-link");
+        let root = temp.path().canonicalize().unwrap();
+        let source = root.join("source");
+        let outside = root.join("outside");
+        let parent_link = root.join("parent-link");
         fs::write(&source, b"payload").unwrap();
         fs::create_dir(&outside).unwrap();
         std::os::unix::fs::symlink(&outside, &parent_link).unwrap();
@@ -819,12 +832,13 @@ mod tests {
     #[test]
     fn extract_directory_preserves_internal_symlink() {
         let temp = TempDir::new().unwrap();
-        let source = temp.path().join("source");
+        let root = temp.path().canonicalize().unwrap();
+        let source = root.join("source");
         fs::create_dir(&source).unwrap();
         fs::write(source.join("target"), b"payload").unwrap();
         std::os::unix::fs::symlink("target", source.join("link")).unwrap();
         let archive = create_nar(&source).unwrap();
-        let destination = temp.path().join("destination");
+        let destination = root.join("destination");
 
         extract_nar(&archive, &destination).unwrap();
 
