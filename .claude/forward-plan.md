@@ -3,11 +3,11 @@
 
 ## Current State / 当前状态
 
-The v5.0.0 canonical HIR pipeline remains the implementation baseline in the pending v5.0.2 source version. v5.0.1 is published on crates.io, but its GitHub Release was blocked by the ARM64 Linux cross-link failure. Current facts are owned by `scripts/counts.sh`:
+The v5.0.0 canonical HIR pipeline remains the implementation baseline in v5.0.2, published on crates.io with five GitHub Release archives. The v5.0.1 GitHub Release was blocked by the ARM64 Linux cross-link failure. Current facts are owned by `scripts/counts.sh`:
 
 | Fact | Current value |
 |------|---------------|
-| Product source version | v5.0.2 (pending release) |
+| Product version | v5.0.2 |
 | E2E tests | 558 E2E tests |
 | LSP surface | 26 LSP methods |
 | Diagnostics | 55 diagnostic codes |

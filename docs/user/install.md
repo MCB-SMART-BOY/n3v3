@@ -47,9 +47,8 @@ This crates.io package is named `n3v3`; it installs the `n3v3` binary.
 该 crates.io 软件包名为 `n3v3`，安装后提供 `n3v3` 二进制文件。
 
 Requires Rust 1.85+. This is the recommended method for developers.
-As of this v5.0.2 source checkout (pending release), `cargo install n3v3` installs
-the published v5.0.1; it does not yet install v5.0.2.
-当前 v5.0.2 源码尚待发布；`cargo install n3v3` 安装的是已发布的 v5.0.1。
+`cargo install n3v3` installs the published v5.0.2.
+`cargo install n3v3` 安装已发布的 v5.0.2。
 
 ### Linux / macOS Script / Linux / macOS 脚本安装
 
@@ -65,13 +64,11 @@ irm https://raw.githubusercontent.com/MCB-SMART-BOY/n3v3/master/scripts/install.
 
 ### Manual Release Install / 手动安装发行版
 
-The v5.0.1 GitHub Release was not created: its Linux aarch64 build could not
-link `renameat2` in the old cross image, so no v5.0.1 release assets are
-available on any platform. Until the v5.0.2 native ARM64 build passes and its
-GitHub Release is created, use the Cargo install or build-from-source instructions.
-v5.0.1 的 GitHub Release 未创建：旧交叉编译镜像无法为 Linux aarch64 链接
-`renameat2`，因此所有平台都没有 v5.0.1 发行文件。在 v5.0.2 构建和发布完成前，
-请使用 Cargo 或源码编译安装。
+The v5.0.1 GitHub Release was blocked by the Linux aarch64 cross-link failure,
+so it has no release assets. v5.0.2 provides all five platform archives,
+including Linux aarch64.
+v5.0.1 的 GitHub Release 因 Linux aarch64 交叉链接失败而未创建；
+v5.0.2 提供全部五个平台的发行文件，包括 Linux aarch64。
 
 ```bash
 # Linux x86_64
@@ -79,7 +76,7 @@ curl -LO https://github.com/MCB-SMART-BOY/n3v3/releases/latest/download/n3v3-x86
 tar xzf n3v3-x86_64-unknown-linux-gnu.tar.gz
 sudo install -m 755 n3v3 /usr/local/bin/n3v3
 
-# Linux aarch64 (available after a successful release with this asset)
+# Linux aarch64
 curl -LO https://github.com/MCB-SMART-BOY/n3v3/releases/latest/download/n3v3-aarch64-unknown-linux-gnu.tar.gz
 
 # macOS Intel
@@ -121,7 +118,7 @@ sudo install -m 755 target/release/n3v3 /usr/local/bin/n3v3
 ## Verify Installation / 验证安装
 
 ```bash
-n3v3 --version          # prints the installed version (v5.0.1 via crates.io; v5.0.2 from this source checkout)
+n3v3 --version          # prints: n3v3 5.0.2 / 输出：n3v3 5.0.2
 n3v3 info --platform    # Check platform capabilities / 查看平台支持
 n3v3 repl               # Start interactive REPL / 启动 REPL
 n3v3 eval "1 + 2"       # Evaluate expression / 计算表达式

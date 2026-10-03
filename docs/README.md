@@ -14,7 +14,7 @@
 
 </div>
 
-**Current version: v5.0.2** (source checkout, pending release). 12 canonical keywords, 55 diagnostic codes, 558 E2E tests, 26 LSP methods. `cargo install n3v3` currently installs the published v5.0.1.
+**Current version: v5.0.2**. 12 canonical keywords, 55 diagnostic codes, 558 E2E tests, 26 LSP methods. Install via `cargo install n3v3`; five platform archives are available on [GitHub Releases](https://github.com/MCB-SMART-BOY/n3v3/releases/tag/v5.0.2).
 
 Welcome to the n3v3 documentation hub. For **developer reference** (per-crate APIs,
 architecture, integration points), see `.claude/skills/` — 13 skill entry points

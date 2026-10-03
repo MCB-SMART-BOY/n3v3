@@ -23,7 +23,7 @@ Based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-## [5.0.2] - Pending
+## [5.0.2] - 2026-10-03
 
 ### Fixed
 - **Linux ARM64 release artifact**: Build natively on an ARM64 runner instead of the old cross image, whose glibc lacked `renameat2` and prevented the v5.0.1 aarch64 binary from linking. CI now links the ARM64 release CLI before crates.io publication. No language behavior changes.

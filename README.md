@@ -39,7 +39,7 @@ for i in 1 2 3; do
 done
 ```
 
-这是 n3v3 v5.0.2（语法 v4.0；待发布）：
+这是 n3v3 v5.0.2（语法 v4.0）：
 
 ```n3v3-check
 #!/usr/bin/env n3v3 run

@@ -16,7 +16,7 @@
 
 ## API Stability Tiers
 
-This document defines the stability guarantees for the n3v3 standard library (stdlib), platform support, and compiler-facing AST APIs. Current source version is v5.0.2 (pending release); v5.0.1 is published on crates.io (v4.0 syntax is canonical; legacy keywords accepted for backward compatibility). Breaking changes to stable APIs will only occur with a major version bump.
+This document defines the stability guarantees for the n3v3 standard library (stdlib), platform support, and compiler-facing AST APIs. Current release is v5.0.2 (v4.0 syntax is canonical; legacy keywords accepted for backward compatibility). Breaking changes to stable APIs will only occur with a major version bump.
 
 ## Tier 1: Stable ✅
 
@@ -283,7 +283,7 @@ When a Tier 2 API needs a breaking change, the old API must:
 
 ### Tier Definitions
 
-- **Tier 1 (Linux)**: Full language and system support. The v5.0.1 GitHub Release was not created because its ARM64 Linux build failed to link `renameat2` in the old cross image; v5.0.2 switches that build to a native ARM64 runner. This is the primary development target.
+- **Tier 1 (Linux)**: Full language and system support. The v5.0.1 GitHub Release was blocked by an ARM64 cross-link failure; v5.0.2 builds natively on ARM64 and publishes both Linux archives. This is the primary development target.
 - **Tier 2 (macOS)**: Near-full language support. Sandbox uses Docker backend. System config and package management unavailable (requires Linux namespaces); verified cache fetch cannot publish store entries without Linux `renameat2(RENAME_NOREPLACE)`. CI runs workspace tests.
 - **Tier 3 (Windows)**: Language core only (lexer, parser, HIR, typeck, eval, fmt, LSP). Signal handling, TTY, sandbox, system config, package management, and registry are unavailable. `OsHost` is unsupported, and verified cache fetch cannot publish store entries. CI runs workspace tests, including fail-closed platform-boundary cases.
 
@@ -305,7 +305,7 @@ When a Tier 2 API needs a breaking change, the old API must:
 | Package management | ✅ | ❌ | ❌ |
 | Registry client | ✅ | ❌ | ❌ |
 | Full CI test suite | ✅ | ✅ (workspace tests; unsupported operations assert rejection) | ✅ (workspace tests; unsupported operations assert rejection) |
-| Release binaries | No v5.0.1 GitHub Release (v5.0.2 pending) | No v5.0.1 GitHub Release (v5.0.2 pending) | No v5.0.1 GitHub Release (v5.0.2 pending) |
+| Release binaries | ✅ (v5.0.2 x86_64, aarch64) | ✅ (v5.0.2 x86_64, aarch64) | ✅ (v5.0.2 x86_64) |
 
 ### Promotion Path
 
