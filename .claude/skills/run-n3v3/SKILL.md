@@ -28,8 +28,9 @@ cargo build -p n3v3 --release  # release — for performance benchmarks
 
 ## Run (agent path) — smoke driver
 
-The driver exercises every CLI command programmatically and exits 0
-if all checks pass:
+The driver exercises nine representative CLI smoke scenarios (not every CLI
+command) and exits 0 if all checks pass:
+驱动脚本只覆盖九个代表性的 CLI 冒烟场景（并非全部命令），全部通过时退出码为 0：
 
 ```bash
 .claude/skills/run-n3v3/driver.sh          # debug binary
@@ -37,7 +38,9 @@ if all checks pass:
 ```
 
 It covers: `eval`, `run`, `check`, `repl` (piped input), `fmt file`,
-`fmt check`, `lsp --check`, v3.0 syntax validation, and error diagnostics.
+`fmt check`, `lsp --check`, legacy v3.0 syntax compatibility, and error diagnostics.
+覆盖 `eval`、`run`、`check`、管道输入的 `repl`、`fmt file`、`fmt check`、
+`lsp --check`、旧 v3.0 语法兼容性和错误诊断。
 
 ### Individual commands
 
@@ -51,7 +54,7 @@ $BIN eval "1 + 2 * 3"                 # → 7 (non-interactive)
 # Run a .n3v3 file
 $BIN run examples/data/lists.n3v3
 
-# Type-check a file (effects on by default)
+# Type-check a file (effectful calls rejected by default)
 $BIN check path/to/file.n3v3
 $BIN check --allow-effects path/to/file.n3v3
 
@@ -127,6 +130,7 @@ cargo fmt --all -- --check
 
 ## Driver
 
-[driver.sh](driver.sh) — smoke test covering all 9 CLI paths.
-Run it from the repo root. It creates a temp directory, writes .n3v3
-test files, exercises every command, and cleans up.
+[driver.sh](driver.sh) — nine representative smoke scenarios, not every CLI
+path. Run it from the repo root. It creates a temp directory, writes .n3v3
+test files, exercises the listed commands, and cleans up.
+从仓库根目录运行；脚本创建临时目录、写入 .n3v3 测试文件、执行上述场景后清理。

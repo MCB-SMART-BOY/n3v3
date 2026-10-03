@@ -21,37 +21,36 @@
 ## Step 1: Install (30 sec) / 第一步：安装（30 秒）
 
 ```bash
-# Pre-built binary
+# Pre-built binary (Linux x86_64) / 预编译二进制（Linux x86_64）
 curl -fsSL https://github.com/MCB-SMART-BOY/n3v3/releases/latest/download/n3v3-x86_64-unknown-linux-gnu.tar.gz | tar xz
-sudo mv n3v3 /usr/local/bin/
+sudo install -m 755 n3v3 /usr/local/bin/n3v3
 
-# Or Arch Linux (AUR package: n3v3-bin)
+# Or Arch Linux (AUR package: n3v3-bin) / 或 Arch Linux（AUR 包：n3v3-bin）
 yay -S n3v3-bin
 
 # From source / 从源码安装
 git clone https://github.com/MCB-SMART-BOY/n3v3.git && cd n3v3
 cargo install --path n3v3-cli --locked
-
-# Or build without installing into PATH / 或仅构建二进制而不安装到 PATH
-# cargo build --release
-# ./target/release/n3v3 repl
 ```
 
 ## Step 2: Play with REPL (1 min) / 第二步：玩玩 REPL（1 分钟）
 
-```bash
+```text
 $ n3v3 repl
 n3v3> 1 + 2 * 3
 7
-n3v3> double = |x| x * 2
+n3v3> let double = |x| x * 2
+<function>
 n3v3> double(21)
 42
 n3v3> { name = "hacker", power = 9001 }
-{power = 9001, name = "hacker"}   # 字段打印顺序不保证
+{ name = "hacker", power = 9001 }
 n3v3> { a = 10; b = 20; a + b }
 30
 n3v3> :quit
 ```
+Record fields have no guaranteed display order. REPL bindings use `let`; a bare `double = ...` is parsed as an expression and fails.
+记录字段的显示顺序不保证固定。REPL 绑定需要 `let`；直接输入 `double = ...` 会被当作表达式解析并报错。
 
 **REPL Commands / 常用命令:** `:help` `:env` `:clear` `:load file.n3v3` `:quit`
 
@@ -76,14 +75,15 @@ let result = {
 Run it:
 运行：
 
-```bash
+```text
 $ n3v3 run hello.n3v3
-[OK] #{greeting = "Hello, World!", magic = 120}   # 字段打印顺序不保证
+[OK] #{greeting = "Hello, World!", magic = 120}
 
 $ n3v3 check hello.n3v3
 [OK] OK - No errors found
-# Effect checking is enabled by default; use --allow-effects for effectful examples.
 ```
+Record fields can appear in either order. Pure examples pass `check` without flags; for effectful examples, use `check --allow-effects`.
+记录字段可能以任意顺序显示。纯函数示例无需参数即可通过 `check`；检查带副作用的示例请使用 `check --allow-effects`。
 
 ## Step 4: Types (1 min) / 第四步：类型系统（1 分钟）
 
@@ -125,7 +125,7 @@ sum(xs) = match xs {
 | Pipe | `x \|> f \|> g` |
 | Interpolation | `` `Hello {name}` `` |
 | Match | `match x { p -> e }` |
-| Comment | `-- text --` or `& text` (v4.0) |
+| Comment | `-- line comment` or `& line comment` at the start of a line (leading whitespace allowed); `-- --` delimits a block comment / `--` 行注释或行首（允许缩进）的 `&` 行注释；`-- --` 界定块注释 |
 
 ## Next / 接下来
 

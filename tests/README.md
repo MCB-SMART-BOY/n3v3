@@ -77,7 +77,6 @@ Tests the evaluator including tail call optimization.
 - ✅ 尾递归阶乘 / Tail-recursive factorial
 - ✅ 尾递归求和 / Tail-recursive sum
 - ✅ 互递归 / Mutual recursion
-- ✅ 列表操作(map/filter/fold) / List operations
 - ✅ 记录操作 / Record operations
 - ✅ If 表达式 / If expressions
 - ✅ 惰性求值 / Lazy evaluation
@@ -131,7 +130,7 @@ Runtime.
 涵盖内容 / Coverage:
 - ✅ 前端 parse 错误真实上报 / Real parser diagnostics through the frontend
 - ✅ 前端 type 错误真实上报 / Real type diagnostics through the frontend
-- ✅ canonical HIR runtime 的算术、记录字段访问、递归、管道、列表匹配、枚举匹配等 smoke coverage
+- ✅ Canonical HIR runtime smoke coverage for `list.sum`, record fields, recursion, pipelines, list and enum matching / canonical HIR runtime 的 `list.sum`、记录字段访问、递归、管道、列表匹配、枚举匹配等烟雾覆盖
 - ✅ `lazy/force` 在前端与 HIR runtime 上的真实闭环回归
 
 ## 运行测试 / Running Tests
@@ -154,9 +153,9 @@ cargo test --test end_to_end
 
 ### 运行单个测试 / Run Single Test
 ```bash
-cargo test --test parser test_parse_basic_function
+cargo test --test parser test_parse_fn
 cargo test --test module_loading test_circular_dependency_detection
-cargo test --test eval test_tail_recursion_factorial
+cargo test --test eval test_eval_recursive_factorial
 ```
 
 ### 显示测试输出 / Show Test Output
@@ -226,19 +225,16 @@ Steps to add new integration tests:
 2. **编写测试函数** / Write test function
    ```rust
    #[test]
-   fn test_my_new_feature() {
-       let source = r#"
-           // n3v3 code here
-       "#;
-
-       let result = test_helper(source);
-       assert!(result.is_ok());
+   fn test_parse_let() {
+       let (file, diags) = n3v3_parser::parse("let x = 42;");
+       assert!(diags.is_empty());
+       assert_eq!(file.items.len(), 1);
    }
    ```
 
 3. **运行并验证** / Run and verify
    ```bash
-   cargo test --test <file> test_my_new_feature
+   cargo test --test parser test_parse_let
    ```
 
 4. **更新本 README** / Update this README
@@ -254,7 +250,7 @@ Some capabilities are still incomplete, so tests should name current gaps explic
 - ⚠️ 完整的 Trait 系统 / Complete trait system
 - ⚠️ 代数数据类型 (ADTs) / Algebraic Data Types
 - ⚠️ 记录模式匹配 / Record pattern matching
-- ⚠️ AST/HIR/runtime/frontend 尚未完全收敛 / AST/HIR/runtime/frontend are not fully converged
+- ⚠️ `list.fold` type checking accepts `(init, func, list)` but evaluation reads `(init, list, func)`; do not treat it as end-to-end supported / `list.fold` 的类型检查参数顺序为 `(init, func, list)`，求值器按 `(init, list, func)` 读取；不要将其视为已闭环
 - ⚠️ 某些内置函数 / Some built-in functions
 - ⚠️ 完整的错误恢复 / Complete error recovery
 

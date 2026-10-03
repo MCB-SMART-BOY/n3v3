@@ -65,7 +65,7 @@ fn run(source: &str) -> Result<Value, EvalError> {
 | Category | Representative coverage |
 |----------|-------------------------|
 | Arithmetic | Int/Float ops, precedence, overflow |
-| Lists | map, filter, fold, comprehension, concat |
+| Lists | map, filter, sum, comprehension, concat (`list.fold` has a type-checker/evaluator argument-order mismatch; see [tests/README.md](../../tests/README.md)) |
 | Records | field access, update, merge, shorthand |
 | Functions | lambda, closure, recursion, currying |
 | Pattern matching | exhaustive, guards, or-patterns, binding |
@@ -88,8 +88,8 @@ cargo test --test parser                   # Parser only
 cargo test --test typeck                   # Type checker only
 cargo test --test end_to_end -- --nocapture  # With output
 cargo test -p n3v3-parser                   # Crate unit tests
-./scripts/test.sh --clippy                  # Pre-commit
-./scripts/test.sh --hunt                    # Fuzzing
+scripts/validate.sh                        # Complete project quality gate / 项目完整质量门
+scripts/validate.sh --quick                # Pre-commit quick gates only / 仅 pre-commit 快速闸门
 ```
 
 ## Testing New Features
@@ -108,11 +108,11 @@ Implementation order:
 | File | What |
 |------|------|
 | `tests/end_to_end.rs` | 558 E2E tests through the canonical pipeline |
-| `tests/parser.rs` | 234 parser integration tests + golden tests |
+| `tests/parser.rs` | 239 parser tests / 239 个 parser 测试（`scripts/counts.sh parser_tests`） |
 | `tests/typeck.rs` | Type system and exhaustiveness tests |
 | `tests/frontend.rs` | Effect propagation and frontend pipeline regressions |
 | `tests/lsp.rs` | LSP semantic hover, symbol, and navigation regressions |
 | `tests/eval.rs` | HIR evaluator tests |
 | `tests/runtime_semantics.rs` | Lazy-parameter and evaluator-scope regressions |
-| `scripts/test.sh` | Pre-commit pipeline |
+| `scripts/validate.sh` | Complete project quality gate; `--quick` is pre-commit only / 完整质量门；`--quick` 仅供 pre-commit |
 | `scripts/bug-hunt.n3v3` | Fuzzing harness |

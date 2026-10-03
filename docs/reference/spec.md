@@ -57,7 +57,7 @@ Migration: consumers that called `AstEnv`, `AstEvaluator`, or `n3v3_eval::compat
 | `;` | Statement terminator (optional at top level) | `let x = 1` |
 | `:` | Type annotation | `x: Int` |
 | `=` | Value binding | `x = 1` |
-| `&` | Record merge, comments | `a & b`, `& comment` |
+| `&` | Record merge; line comment only at the start of a line | `a & b`, `& comment` |
 | `|>` | Pipe | `x |> f` |
 
 
@@ -72,7 +72,7 @@ Migration: consumers that called `AstEnv`, `AstEvaluator`, or `n3v3_eval::compat
 | `;` | 语句结尾（顶层可选） | `let x = 1` |
 | `:` | 类型声明 | `x: Int` |
 | `=` | 绑定值 | `x = 1` |
-| `&` | 记录合并、注释 | `a & b`, `& comment` |
+| `&` | 记录合并；仅在行首用作行注释 | `a & b`, `& 注释` |
 | `|>` | 管道 | `x |> f` |
 
 
@@ -81,15 +81,15 @@ Migration: consumers that called `AstEnv`, `AstEvaluator`, or `n3v3_eval::compat
 
 ### Comments / 注释
 
+`--` starts a line comment anywhere. At the start of a line (after optional whitespace), a single `&` also starts a line comment unless followed by `&`; within an expression, `&` merges records. Block comments start and end with `-- --` and do not nest.
+`--` 可在任意位置开始行注释。行首（允许前导空白）的单个 `&` 也开始行注释，但后面不能紧跟 `&`；表达式中的 `&` 用于合并记录。块注释由 `-- --` 开始和结束，不支持嵌套。
+
 ```n3v3
--- single line comment --
-
---
-   multi-line comment
-   -- can be nested --
---
-
-& line comment (v4.0)
+-- single line comment
+& line-start comment
+let combined = base & overrides; -- record merge, then line comment
+-- -- multi-line comment
+   continues here -- --
 ```
 
 ### Literals
@@ -131,12 +131,11 @@ literal requires the next character to be alphanumeric or `_`, `-`, `.`.
 ### 注释
 
 ```n3v3
--- 单行注释 --
-
---
-   多行注释
-   -- 可以嵌套 --
---
+-- 单行注释
+& 行首注释
+let combined = base & overrides; -- 合并记录，然后是行注释
+-- -- 多行注释
+   在这里结束 -- --
 ```
 
 ### 字面量
@@ -160,7 +159,7 @@ true  false
 -- 插值字符串
 `你好 {name}`
 
--- 路径字面量（目前就是字符串）
+-- 路径字面量（一等 `Path` 值）
 ./relative  ../parent  /absolute
 ```
 

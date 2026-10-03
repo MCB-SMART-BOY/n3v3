@@ -4,7 +4,8 @@
 
 **版本**: v1.1
 **日期**: 2026-06-17
-**状态**: Implemented — Phase A-C complete (14 APIs), v4.0.1 verified
+**Status / 状态**: Historical design (v1.1); Implemented: 13 Stream<T> APIs in the current standard library and type checker (`scripts/counts.sh stream_apis`). `io.streamWrite` remains a design proposal, not a registered API.
+历史设计（v1.1）；当前标准库及类型检查器已实现 13 个 Stream<T> API（`scripts/counts.sh stream_apis`）。`io.streamWrite` 仍是设计提案，并未注册为 API。
 **关联**: [Effect Boundary](./effect-boundary-design.md) · [Forward Plan](./forward-plan.md) · [Feature Matrix](../docs/project/feature-matrix.md)
 **作者**: Chief Architect
 
@@ -12,17 +13,21 @@
 
 ---
 
+The motivation and implementation sketches below record the original proposal, not a complete description of today's runtime. For current signatures see [`docs/reference/api.md`](../docs/reference/api.md); for runtime effect classification see §3 and §6 below.
+下文的动机与实现草图记录的是原始方案，不代表当前 runtime 的完整说明。当前签名见 [`docs/reference/api.md`](../docs/reference/api.md)；当前构造器的效果分类见下文 §3 和 §6。
+
 ## 1. 动机 / Motivation
 
 ### 1.1 问题陈述
 
-当前 n3v3 的流式 I/O 仅支持**回调模式**：
+Before `Stream<T>` was introduced, n3v3 streaming I/O supported only **callbacks**:
+引入 `Stream<T>` 之前，n3v3 的流式 I/O 仅支持**回调模式**：
 
 ```n3v3
--- 当前唯一可用的流式 API
-io.execCommandStreaming(cmd, fn(line) { io.print(line) });
-io.execPipelineStreaming(pipe, fn(line) { io.print(line) });
-io.readFileLines(path, fn(line) { io.print(line) });
+-- Historical callback APIs (not the only streaming APIs today)
+io.execCommandStreaming(cmd, |line| { io.print(line) });
+io.execPipelineStreaming(pipe, |line| { io.print(line) });
+io.readFileLines(path, |line| { io.print(line) });
 ```
 
 这种模式有根本局限：
@@ -34,7 +39,8 @@ io.readFileLines(path, fn(line) { io.print(line) });
 | 无法中断流 | 回调里 return 不停止生产者 | `Ctrl+C` on pipe |
 | 无法存储流 | 不能把流赋值给变量再传递 | `output=$(cmd)` |
 
-**核心缺失**：没有一等 `Stream<T>` 类型。
+**Original gap (now addressed):** there was no first-class `Stream<T>`.
+**原始缺口（现已解决）**：当时没有一等 `Stream<T>` 类型。
 
 ### 1.2 目标
 
@@ -69,7 +75,7 @@ io.streamDrop(s: Stream<T>, n: Int): Stream<T>      -- 跳过前 n 个
 -- 消费流 (触发求值)
 io.streamCollect(s: Stream<T>): List<T>             -- 收集为列表
 io.streamPipe(s: Stream<String>, cmd: Command): ProcessResult  -- 流入命令 stdin
-io.streamWrite(s: Stream<String>, path: Path): Unit -- 写入文件
+io.streamWrite(s: Stream<String>, path: Path): Unit -- proposed, not registered / 设计提案，当前未注册
 io.streamForEach(s: Stream<T>, f: T -> Unit): Unit  -- 逐元素消费
 io.streamFold(s: Stream<T>, init: A, f: A -> T -> A): A  -- 严格折叠
 
@@ -162,7 +168,7 @@ Value (运行时值)
 |---------|------|---------|------|
 | `io.streamCollect` | `Stream<T> -> List<T>` | ✅ | 收集为列表（可能触发 I/O） |
 | `io.streamPipe` | `Stream<String> * Command -> ProcessResult` | ✅ | 流入命令 stdin |
-| `io.streamWrite` | `Stream<String> * Path -> Unit` | ✅ | 写入文件 |
+| `io.streamWrite` | `Stream<String> * Path -> Unit` | Planned / 计划中 | 原始设计提案；当前未注册，不能调用 |
 | `io.streamForEach` | `Stream<T> * (T -> Unit) -> Unit` | ✅ | 逐元素消费（有副作用） |
 | `io.streamFold` | `Stream<T> * A * (A -> T -> A) -> A` | ✅ | 严格折叠（会触发 I/O） |
 
@@ -184,25 +190,25 @@ io.streamWithTimeout(s: Stream<String>, ms: Int): Stream<Option<String>>
 ```n3v3
 -- Bash:  cmd1 | grep "error" | wc -l
 -- n3v3:
-import std.io as io;
-import std.string as str;
+use std.io = io;
+use std.string = str;
 
 let cmd1 = io.command("journalctl", ["-n", "100"]);
 let cmd2 = io.command("wc", ["-l"]);
 
 let stream = io.streamCommand(cmd1);
-let filtered = io.streamFilter(stream, fn(line) { str.contains(line, "error") });
+let filtered = io.streamFilter(stream, |line| { str.contains(line, "error") });
 let result = io.streamPipe(filtered, cmd2);
 ```
 
 ### 4.2 `|>` 管道语法集成
 
 ```n3v3
--- 语法糖目标 (Phase 4.5):
+-- Pipeline composition sketch (current v4 lambda syntax):
 let result = io.command("journalctl", ["-n", "100"])
     |> io.streamCommand
-    |> fn(s) { io.streamFilter(s, fn(line) { str.contains(line, "error") }) }
-    |> fn(s) { io.streamPipe(s, cmd2) };
+    |> |s| { io.streamFilter(s, |line| { str.contains(line, "error") }) }
+    |> |s| { io.streamPipe(s, cmd2) };
 ```
 
 > `|>` 当前已支持 `Command |> Command → Pipeline` 和 `x |> f → f(x)`。
@@ -295,7 +301,7 @@ const MAX_STREAM_LINES: usize = 100_000;              // 100k lines
 | `io.streamDrop` | **无副作用**（变换） | 纯计数 |
 | `io.streamCollect` | **有副作用**（消费） | 触发文件/进程 I/O |
 | `io.streamPipe` | **有副作用**（消费） | 启动进程 |
-| `io.streamWrite` | **有副作用**（消费） | 写入文件系统 |
+| `io.streamWrite` (planned / 计划中) | 未注册，不属于当前效果分类 | 原始设计中的文件写入操作 |
 | `io.streamForEach` | **有副作用**（消费） | 执行有副作用回调 |
 | `io.streamFold` | **有副作用**（消费） | 触发 I/O |
 | `io.streamWithTimeout` | **有宿主效果**（构造） | 当前读取计时器并启动生产者 |

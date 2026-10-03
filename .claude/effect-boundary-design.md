@@ -4,8 +4,9 @@
 
 **版本**: v1.2
 **日期**: 2026-06-17
-**状态**: 实现完成 (v4.0.1)
-**关联**: [前向计划](./forward-plan.md) · [开发计划](../../.claude/forward-plan.md) · [功能矩阵](../docs/project/feature-matrix.md)
+**Status / 状态**: Historical design (v1.2, v4.0.1 snapshot); the current effect registry is `crates/n3v3-common/src/action.rs::intrinsic_metadata`. Stream<T> is implemented, while the design sketches and old gap table below are not a current feature checklist.
+历史设计（v1.2，v4.0.1 快照）；当前效果注册表以 `crates/n3v3-common/src/action.rs::intrinsic_metadata` 为准。Stream<T> 已实现；下文设计草图及旧缺口表不是当前功能清单。
+**关联**: [前向计划](./forward-plan.md) · [功能矩阵](../docs/project/feature-matrix.md)
 
 </div>
 
@@ -173,7 +174,7 @@ let is_effectful = metadata.is_some_and(|item| item.effects.is_host_effect());
 | `io.streamDrop` | 变换 | ❌ 无 | streamDrop | 跳过 ✅ |
 | `io.streamCollect` | 消费 | ✅ | streamCollect | 收集为列表 |
 | `io.streamPipe` | 消费 | ✅ | streamPipe | 流入命令 stdin |
-| `io.streamWrite` | 消费 | ✅ | streamWrite | 写入文件 |
+| `io.streamWrite` (planned / 计划中) | 消费 | 当前未注册 | — | 原始设计中的文件写入提案，不是可调用 API |
 | `io.streamForEach` | 消费 | ✅ | streamForEach | 逐元素消费 |
 | `io.streamFold` | 消费 | ✅ | streamFold | 严格折叠 |
 | `io.streamWithTimeout` | 包装 | ✅ 时间 | — | 当前构造读取 `Instant`；尚未 cold |
@@ -232,7 +233,7 @@ Value (运行时值)
   ├── Value.closure(x, body, env)                 ← Task / spawn 结果
   ├── Value.list(elems)                           ← readFileLines 结果
   ├── Value.someVal(v) / Value.noneVal            ← 超时结果
-  ├── Value.stream(StreamValue)                  ← Phase 4 (planned)
+  ├── Value.stream(StreamValue)                  ← 已实现 / implemented
   └── Value.unit                                  ← writeFile 等操作的结果
 
 IOState (效果状态，在 EffectEval 中传递)
@@ -402,7 +403,7 @@ LD_PRELOAD, LD_LIBRARY_PATH, DYLD_INSERT_LIBRARIES, DYLD_LIBRARY_PATH
 
 ---
 
-## 8. 当前缺口与后续工作 / Gaps & Future Work
+## 8. Historical gaps (v1.2 snapshot) / 历史缺口（v1.2 快照）
 
 ### 8.1 语义缺口
 

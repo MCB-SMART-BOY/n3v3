@@ -1,6 +1,9 @@
 # n3v3: Better Bash + Better Nix — Roadmap
 
-## 当前状态
+Status: Historical roadmap snapshot based on v4.0.1, not the current implementation checklist. For current capability status consult [`docs/project/feature-matrix.md`](../docs/project/feature-matrix.md); checked items and phase labels below record the original planning view.
+状态：本文是以 v4.0.1 为背景的历史路线图快照，并非当前实现清单。当前能力状态以 [`docs/project/feature-matrix.md`](../docs/project/feature-matrix.md) 为准；下方勾选项和阶段标签保留原有规划视角。
+
+## Historical v4.0.1 status / v4.0.1 历史状态
 
 n3v3 v4.0.1 已经具备系统脚本和构建系统的基础能力：
 
@@ -50,7 +53,7 @@ n3v3 v4.0.1 已经具备系统脚本和构建系统的基础能力：
 - [x] `io.args()` 结构化解析：返回 `(List<String>, Record)` 元组；`-v`→Bool、`-j8`→Int、`-f out`→String、`-10`→位置参数、`--` 分隔
 - [x] 内置 CLI 参数解析：`io.args()` 本身即解析器，无需额外 API
   ```n3v3
-  let (files, { v, j = 4 }) = io.args();  // 解构即解析
+  let (files, { v, j = 4 }) = io.args();  -- destructuring parses args / 解构即解析
   ```
 
 **受益：** n3v3 脚本比 Bash 更安全、更可读、更可维护。
@@ -86,7 +89,7 @@ n3v3 v4.0.1 已经具备系统脚本和构建系统的基础能力：
 
 ---
 
-## 优先级建议
+## Historical phase priorities / 历史阶段优先级
 
 ```
 Phase 1 (completed: v3.6-v3.12)

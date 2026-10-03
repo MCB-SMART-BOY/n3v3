@@ -26,6 +26,7 @@ Select every affected stage and explain the impact in the sections below.
 ## Effectful Builtin Parity (if applicable)
 <!-- Every new effectful builtin needs all of these integration points. -->
 - [ ] Not an effectful builtin
+- [ ] `n3v3_common::intrinsic_metadata()` entry (source of effect classification / 效果分类的权威来源)
 - [ ] Typeck entry
 - [ ] Frontend wire-up
 - [ ] HIR eval

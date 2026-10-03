@@ -50,6 +50,25 @@
 | [`io/files.n3v3`](io/files.n3v3) | File read/write/append, directory operations |
 | [`io/process.n3v3`](io/process.n3v3) | Process execution, pipelines, stdin, exit codes |
 
+`io/files.n3v3` assumes a Unix-like system with a writable `/tmp` directory. It overwrites `/tmp/n3v3-example.txt` and writes under `/tmp/n3v3-demo/`; run it only if those paths are safe to use.
+`io/files.n3v3` 需要类 Unix 系统和可写的 `/tmp` 目录。它会覆盖 `/tmp/n3v3-example.txt`，并在 `/tmp/n3v3-demo/` 下写文件；确认这些路径可以安全使用后再运行。
+
+## Learning Path / 学习路径
+
+Run the lessons from the repository root with `n3v3 run examples/learning/<file>.n3v3`.
+在仓库根目录使用 `n3v3 run examples/learning/<file>.n3v3` 运行课程示例。
+
+| File / 文件 | Content / 内容 |
+|-------------|----------------|
+| [`learning/01_basics.n3v3`](learning/01_basics.n3v3) | Values, types, records and comprehensions / 值、类型、记录和列表推导 |
+| [`learning/02_pattern_matching.n3v3`](learning/02_pattern_matching.n3v3) | Exhaustive patterns / 穷尽模式匹配 |
+| [`learning/03_error_handling.n3v3`](learning/03_error_handling.n3v3) | Result variants / Result 变体 |
+| [`learning/04_modules.n3v3`](learning/04_modules.n3v3) | Standard `std.list` import and alias; no platform files / 标准 `std.list` 导入与别名；无平台文件依赖 |
+| [`learning/05_functional.n3v3`](learning/05_functional.n3v3) | Higher-order list functions and recursive sum / 高阶列表函数与递归求和 |
+| [`learning/06_script.n3v3`](learning/06_script.n3v3) | CLI args and filesystem glob (effectful) / CLI 参数与文件匹配（有副作用） |
+| [`learning/07_advanced.n3v3`](learning/07_advanced.n3v3) | Task records and summary / 任务记录与汇总 |
+| [`learning/08_space_supplies.n3v3`](learning/08_space_supplies.n3v3) | Pure, self-contained space-supplies scoring; [tutorial](../docs/user/tutorial.md#7-mini-project-space-supplies--趣味小项目太空补给计分) / 纯函数、自包含的太空补给计分；见教程 |
+
 ## Running / 运行
 
 ```bash

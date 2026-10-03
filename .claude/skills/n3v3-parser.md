@@ -42,8 +42,8 @@ Source Code (.n3v3)
 | `import std.io as io` | same | `use std.io = io` | `=` matches binding syntax |
 | `fn(x) x + 1` | `\|x\| x + 1` | same | Rust-style lambda |
 | `#{ x = 1 }` | `{ x = 1 }` | same | Delimiter-driven container theory |
-| `// comment` | `& comment` | same | `//` freed for path operator |
-| `a // b` (merge) | `a & b` | same | Consistent with `&` comment |
+| `// comment` | line-start `& comment` / 行首 `& comment` | `-- comment` (line / 行), `-- -- ... -- --` (block / 块); line-start `&` remains supported / 行首 `&` 仍可用 | `&` comments require line start (optional indentation) / `&` 注释必须在行首（可缩进） |
+| `a // b` (merge) | `a & b` | same | Inside expressions, `&` merges records / 表达式内 `&` 合并记录 |
 | `if cond then a else b` | same | `if cond -> a else b` | Arrow unifies with match |
 | `lazy expr` | same | `~expr` | Lightweight prefix |
 | `fn foo() effect = ...` | same | `fn foo() = ...` | Auto-inferred |
@@ -68,7 +68,8 @@ peek_char()
     ├── '`'           → interpolated() → InterpolatedStr
     ├── letter/_      → ident()  → Ident | Keyword
     ├── '/'           → path or div
-    ├── '&'           → & (comment) or && (and)
+    ├── '&'           → line-start legacy comment or record merge (&& = and)
+    ├── '-'           → -- line comment / -- -- ... -- -- block comment
     ├── '|'           → |, |>, ||
     ├── '{'/'}'/'('...→ Delimiter
     └── ...
@@ -222,5 +223,6 @@ empty import, or unrelated fallback.
 - **Verified parser coverage**: shebang handling, canonical record/enum forms,
   implicit record arguments, legacy effect markers, delimiter-sensitive
   `match` parsing, and wildcard-vs-variable pattern classification.
-- **Known boundary**: lexer discards comment trivia; formatter cannot preserve
-  comments until trivia is represented in the AST/CST.
+- **Comment trivia**: `tokenize_with_trivia()` passes comments into
+  `SourceFile.comments`; the formatter emits them. This does not guarantee
+  exact preservation of their original placement.

@@ -373,11 +373,7 @@ impl Eq for Point {
 
 ### Bounds
 
-```n3v3
-print_all<T: Show>(items: List<T>) = {
-    -- T must implement Show
-}
-```
+A bound such as `T: Show` requires `T` to implement `Show`; a function also needs a real body returning its declared result.
 
 ---
 
@@ -406,58 +402,27 @@ impl Eq for Point {
 
 ### 约束
 
-```n3v3
-print_all<T: Show>(items: List<T>) = {
-    -- T 必须实现 Show
-}
-```
+像 `T: Show` 这样的约束要求 `T` 实现 `Show`；函数还必须有返回声明结果的真实函数体。
 
 ---
 
 
 ## 5. Modules / 模块
 
+`use std.list = list` imports the standard list module with the alias `list`. The bundled [module lesson](../../examples/learning/04_modules.n3v3) uses only this standard module; no local import paths, system files, or network are needed.
+`use std.list = list` 用别名 `list` 导入标准列表模块。[模块课程](../../examples/learning/04_modules.n3v3) 只使用该标准模块，不需要本地导入路径、系统文件或网络。
 
-### Define
+```n3v3-check
+use std.list = list
 
-```n3v3
--- utils.n3v3
-add(x, y) = x + y
-```
-Since v4.0, n3v3 has no private-binding syntax: all bindings are public.
-
-### Import
-
-```n3v3
-use utils
-r = utils.add(1, 2)
-
--- Or selective
-use utils (add)
-r = add(1, 2)
+numbers = [1, 2, 3, 4]
+doubled = list.map(|x| x * 2, numbers)
+even = list.filter(|x| x % 2 == 0, numbers)
+result = even
 ```
 
----
-
-
-### 定义
-
-```n3v3
--- utils.n3v3
-add(x, y) = x + y
-```
-从 v4.0 起，n3v3 不再有私有绑定语法：所有绑定都是 public。
-
-### 导入
-
-```n3v3
-use utils
-r = utils.add(1, 2)
-
--- 或者只导入需要的
-use utils (add)
-r = add(1, 2)
-```
+Run `n3v3 run examples/learning/04_modules.n3v3` from the repository root. The final value is `[2, 4]`.
+在仓库根目录运行 `n3v3 run examples/learning/04_modules.n3v3`，最终结果是 `[2, 4]`。
 
 ---
 
@@ -465,59 +430,63 @@ r = add(1, 2)
 ## 6. Best Practices / 写代码的建议
 
 
-1. **Use type annotations** for public APIs
-2. **Prefer immutable data** (it's the only option anyway)
-3. **Use tail recursion** for large iterations
-4. **Use pipes** for data transformation chains
-5. **Match exhaustively** — handle all cases
+1. **Annotate public APIs** to make their contracts clear.
+2. **Use immutable data** and pipes for transformation chains.
+3. **Match exhaustively** — handle the empty list as well as nonempty lists.
 
-```n3v3
+```n3v3-check
 use std.list = list
 
-let data = [1, 2, 3, 4]
-let valid = |x| x % 2 == 0
-let transform = |x| x * 2
-let add = |acc, x| acc + x
+data = [1, 2, 3, 4]
+valid = |x| x % 2 == 0
+transform = |x| x * 2
 
 filter_valid(xs) = list.filter(valid, xs)
 map_transform(xs) = list.map(transform, xs)
-fold_sum(xs) = list.fold(0, add, xs)
+
+sum(xs) = match xs {
+    [] -> 0,
+    [head, ..rest] -> head + sum(rest),
+}
 
 result = data
     |> filter_valid
     |> map_transform
-    |> fold_sum
-
+    |> sum
 ```
+
+`list.map` and `list.filter` run as shown. For an executable sum, use exhaustive list matching rather than `list.fold`: its type-checker currently accepts `(init, function, list)`, but the evaluator expects `(init, list, function)` and rejects that call. This pipeline produces `12`.
+`list.map` 和 `list.filter` 可按示例运行。求和时请使用穷尽的列表匹配，而不是 `list.fold`：其类型检查器目前接受 `(init, function, list)`，求值器却要求 `(init, list, function)`，因此前一种调用会在运行时报错。此管道计算结果为 `12`。
+
+1. **公开 API 加上类型注解**，明确其契约。
+2. **用不可变数据和管道**构建数据变换链。
+3. **匹配要穷尽**——既处理空列表，也处理非空列表。
+
 ---
 
 
-1. **公开 API 加上类型注解**，方便别人用
-2. **数据都是不可变的**，习惯就好
-3. **大循环用尾递归**，不然栈会炸
-4. **数据变换用管道**，看着清楚
-5. **匹配要穷尽**，别漏情况
+## 7. Mini-project: Space Supplies / 趣味小项目：太空补给计分
 
-```n3v3
-use std.list = list
+The [space-supplies example](../../examples/learning/08_space_supplies.n3v3) uses no network or filesystem APIs and has no platform-specific paths. Run it from the repository root; the CLI may separately warn if it cannot lock the repository's flake input.
+[太空补给示例](../../examples/learning/08_space_supplies.n3v3)本身不调用网络或文件系统 API，也不依赖平台路径。从仓库根目录运行；如果 CLI 无法锁定仓库的 flake 输入，可能另行打印警告。
 
-let data = [1, 2, 3, 4]
-let valid = |x| x % 2 == 0
-let transform = |x| x * 2
-let add = |acc, x| acc + x
+1. Make a list of records with `name` and `units`. A zero-unit entry stays in the manifest to show what was not loaded.
+   建立含 `name`、`units` 字段的记录列表。零单位的项目留在清单中，表示该物资尚未装载。
+2. `score(item)` matches the supply name: oxygen earns three points per unit, water two, and anything else one. `sum_scores(items)` matches both the empty list and a head with its remaining tail.
+   `score(item)` 匹配物资名称：氧气每单位得三分，水得两分，其他得一分。`sum_scores(items)` 同时匹配空列表及含头项和剩余项的列表。
+3. The comprehension `[item | item <- supplies, item.units > 0]` keeps loaded supplies. `loaded |> sum_scores` passes that list into the scorer; for four oxygen and two water units the total is `4 * 3 + 2 * 2 = 16`.
+   列表推导式 `[item | item <- supplies, item.units > 0]` 仅保留已装载物资；`loaded |> sum_scores` 将其传入计分函数。四单位氧气和两单位水的总分是 `4 * 3 + 2 * 2 = 16`。
+4. A `report` record stores the mission name, score and readiness status; the final `result = report.score` selects a predictable scalar output instead of depending on record field display order.
+   `report` 记录保存任务名称、分数和准备状态；最后的 `result = report.score` 取出确定的标量结果，不依赖记录字段的显示顺序。
 
-filter_valid(xs) = list.filter(valid, xs)
-map_transform(xs) = list.map(transform, xs)
-fold_sum(xs) = list.fold(0, add, xs)
-
-result = data
-    |> filter_valid
-    |> map_transform
-    |> fold_sum
-
+```bash
+n3v3 run examples/learning/08_space_supplies.n3v3
 ```
----
 
+The result line is `[OK] 16`. Try changing `units` or adding a supply name: the fallback match branch will score the new item.
+结果行是 `[OK] 16`。可以修改 `units` 或添加新物资名称：匹配中的兜底分支会为新物资计分。
+
+---
 
 ## Next / 接下来
 

@@ -62,12 +62,12 @@ module and must be qualified (or imported with `use std.list`).
 |-----|-----------|-------------|
 | `len` | `(list: List a) -> Int` | Length of list or string |
 | `list.head` | `(list: List a) -> Option a` | First element |
-| `list.tail` | `(list: List a) -> Option (List a)` | All but first element |
+| `list.tail` | `(list: List a) -> List a` | All but first element |
 | `list.last` | `(list: List a) -> Option a` | Last element |
 | `list.map` | `(f: a -> b, list: List a) -> List b` | Transform each element |
 | `list.filter` | `(f: a -> Bool, list: List a) -> List a` | Keep elements matching predicate |
-| `list.fold` | `(init: b, f: b -> a -> b, list: List a) -> b` | Left fold — **not available yet**: the runtime returns `list.fold requires runtime closure evaluation` |
-| `list.foldRight` | `(init: b, f: a -> b -> b, list: List a) -> b` | Right fold — **not available yet**: same runtime stub |
+| `list.fold` | `(init: b, f: b -> a -> b, list: List a) -> b` | Left fold — **not usable through the CLI/HIR pipeline**: typed argument order differs from evaluator order; runtime reports `fold expects a list` |
+| `list.foldRight` | `(init: b, f: a -> b -> b, list: List a) -> b` | Right fold — **not usable through the CLI/HIR pipeline**: no HIR evaluator dispatch |
 
 ### Type Introspection
 
@@ -106,7 +106,10 @@ module and must be qualified (or imported with `use std.list`).
 |-----|-----------|-------------|
 | `list.map` | `(f: a -> b, list: List a) -> List b` | Map over list |
 | `list.filter` | `(f: a -> Bool, list: List a) -> List a` | Filter list |
-| `list.fold` | `(init: b, f: b -> a -> b, list: List a) -> b` | Left fold — **not available yet** (runtime stub returns an error) |
+| `list.fold` | `(init: b, f: b -> a -> b, list: List a) -> b` | Left fold — **not usable through the CLI/HIR pipeline** (typed argument order differs from evaluator order; `fold expects a list`) |
+
+`list.fold` is type-checked as `(init, function, list)`, but HIR evaluation reads `(init, list, function)`. The `n3v3-std` closure-evaluation stub is not the error reached through the CLI pipeline. `list.foldRight` has a type-checker entry but no HIR dispatch. `list.map` and `list.filter` have separate working HIR dispatch and are not affected by the fold argument mismatch.
+`list.fold` 的类型检查参数顺序是 `(init, function, list)`，但 HIR 求值读取 `(init, list, function)`。通过 CLI 流水线运行时不会进入 `n3v3-std` 的闭包求值桩函数。`list.foldRight` 在类型检查器中有条目，但没有 HIR 派发。`list.map` 和 `list.filter` 有独立的 HIR 派发，不受 fold 参数顺序不一致的影响。
 
 ### Basic Types
 

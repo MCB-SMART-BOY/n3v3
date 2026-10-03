@@ -21,16 +21,23 @@ Syntax highlighting, auto-completion, diagnostics, formatting, and code navigati
 - **Folding Ranges** — Code folding for blocks, structs, enums, traits, impls, match
 - **Code Actions** — Quick-fix suggestions for parse and type errors
 
-## Requirements
+## Requirements / 前置条件
 
-- [n3v3 CLI](https://github.com/MCB-SMART-BOY/n3v3) installed and available on `$PATH`
-- Run `n3v3 setup vscode` after installation for optimal configuration
+- [n3v3 CLI](https://github.com/MCB-SMART-BOY/n3v3) installed and available on `$PATH`.
+- Install a built extension package that includes `out/extension.js` for LSP features. `n3v3 setup vscode` copies the language metadata and syntax grammar from a source checkout; it does not copy or compile the extension's JavaScript.
 
-## Quick Start
+- 已安装 [n3v3 CLI](https://github.com/MCB-SMART-BOY/n3v3)，并可通过 `$PATH` 找到。
+- 如需 LSP 功能，请安装包含 `out/extension.js` 的已构建扩展包。`n3v3 setup vscode` 只会从源码检出目录复制语言元数据和语法规则，不会复制或编译扩展的 JavaScript。
 
-1. Install n3v3: follow the [installation guide](https://github.com/MCB-SMART-BOY/n3v3#installation)
-2. Install this extension from the VS Code marketplace
-3. Open any `.n3v3` file — syntax highlighting and diagnostics activate automatically
+## Quick Start / 快速开始
+
+1. Install n3v3: follow the [installation guide](https://github.com/MCB-SMART-BOY/n3v3#installation).
+2. Install a built n3v3 extension package in VS Code.
+3. Open a `.n3v3` file to activate the extension.
+
+1. 按[安装指南](https://github.com/MCB-SMART-BOY/n3v3#installation)安装 n3v3。
+2. 在 VS Code 中安装已构建的 n3v3 扩展包。
+3. 打开 `.n3v3` 文件以激活扩展。
 
 ## Configuration
 

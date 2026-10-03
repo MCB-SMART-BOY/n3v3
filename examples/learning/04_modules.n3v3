@@ -1,11 +1,11 @@
-use std.io = io
+-- The standard library modules are available without local paths or files.
+-- 标准库模块无需本地路径或文件即可使用。
+use std.list = list
 
-use std.string = str
+numbers = [1, 2, 3, 4]
 
-msg = "hello n3v3"
+doubled = list.map(|x| x * 2, numbers)
 
-upper = str.to_upper(msg)
+even = list.filter(|x| x % 2 == 0, numbers)
 
-has = str.contains(msg, "n3v3")
-
-content = io.readFile("/etc/hostname")
+result = even

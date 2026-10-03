@@ -79,13 +79,15 @@ publish requests; reads remain anonymous and public service still needs a gatewa
 
 ## Build Commands
 
+```bash
 cargo build -p n3v3         # CLI binary (CI target)
 cargo check --workspace     # Fast validation (no codegen)
 cargo test --workspace      # Unit + integration
 cargo test --test end_to_end -- --nocapture  # E2E
 cargo fmt --all             # Format (enforced in CI)
 cargo clippy --workspace --all-targets -- -D warnings  # Lint
-./scripts/test.sh --clippy  # Pre-commit pipeline
+scripts/validate.sh          # Complete project quality gate / 项目完整质量门
+scripts/validate.sh --quick  # Pre-commit only; skips full tests and CLI smoke / 仅 pre-commit，跳过完整测试与 CLI 冒烟
 ```
 
 ## Current CLI and diagnostic facts

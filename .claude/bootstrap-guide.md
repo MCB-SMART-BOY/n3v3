@@ -1,26 +1,22 @@
 <div align="center">
 
-<img src="../../assets/logo.svg" width="120" alt="n3v3 logo">
+<img src="../assets/logo.svg" width="120" alt="n3v3 logo">
 
 <h1>Bootstrap Package Examples</h1>
 
 <p><em>Bootstrap 示例包</em></p>
 
 <p>
-  <strong><a href="../../README.md">Home</a></strong> ·
-  <strong><a href="../README.md">Docs</a></strong>
+  <strong><a href="../README.md">Home</a></strong> ·
+  <strong><a href="../docs/README.md">Docs</a></strong>
 </p>
 
 </div>
 
 ---
 
-This document describes the planned bootstrap package chain. The illustrative
-package files that used to live under `examples/bootstrap/` were removed from
-the tree; the only bootstrap artifact shipped today is
-`examples/ci-bootstrap.n3v3`, which drives the project's own CI steps.
-本文档描述计划中的 bootstrap 包链。原先放在 `examples/bootstrap/` 下的示例包文件已从仓库移除；
-当前仓库中唯一的 bootstrap 产物是 `examples/ci-bootstrap.n3v3`，它用 n3v3 驱动项目自身的 CI 步骤。
+This is a planned bootstrap package-chain sketch, not a runnable n3v3 package example. The code block below uses proposed derivation syntax and placeholder sources/hashes; it must not be copied into `n3v3 build`. No package files from the former `examples/bootstrap/` directory ship today. `examples/ci-bootstrap.n3v3` is an unrelated, executable CI script, not a bootstrap package.
+本文档是计划中的 bootstrap 包链草图，不是可运行的 n3v3 包示例。下方代码块包含提议中的 derivation 语法及占位源地址/哈希，不应复制给 `n3v3 build` 执行。旧 `examples/bootstrap/` 目录下的包文件现已不随仓库提供。`examples/ci-bootstrap.n3v3` 是独立的可执行 CI 脚本，不是 bootstrap 包。
 
 ## 什么是 Bootstrap 基础包? / What Are Bootstrap Packages?
 
@@ -40,10 +36,10 @@ These examples represent the earliest building blocks of a future bootstrap chai
 ```
 
 ## 包定义结构 / Package Definition Structure
+The following is proposed package metadata and build-phase pseudocode, not a supported `.n3v3` derivation definition.
+以下是拟议包元数据和构建阶段的伪代码，不是当前支持的 `.n3v3` derivation 定义。
 
-每个 `.n3v3` 文件定义一个包,使用 n3v3 的 derivation 语法:
-
-```n3v3
+```text
 {
     name = "package-name",
     version = "1.0.0",
@@ -72,7 +68,7 @@ These examples represent the earliest building blocks of a future bootstrap chai
 }
 ```
 
-## 当前包列表 / Current Packages
+## Planned package list / 计划中的包列表
 
 ### 📋 计划中 / Planned (示例文件已移除 / example files removed)
 
@@ -124,18 +120,13 @@ Bootstrap 包应该尽可能少地依赖其他包，理想情况下只依赖更�
 - Strip 二进制文件
 - 分离开发文件到 `dev` 输出
 
-## 使用方法 / Usage
+## Intended usage after packages are implemented / 包实现后的预期用法
 
-### 构建单个包 / Build a Single Package
+The CLI supports `n3v3 info` and (on Unix) `n3v3 build`, but the package definitions described above do not exist in this tree. The following build command is only an intended future workflow, not an executable example for this repository:
+CLI 提供 `n3v3 info` 及（Unix 上的）`n3v3 build`，但本页描述的包定义在仓库中尚不存在。以下构建命令仅表示未来预期流程，不是本仓库可执行的示例：
 
-```bash
-n3v3 info            # 包与平台信息 / package and platform information
-```
-
-### 构建整个工具链 / Build Entire Toolchain
-
-```bash
-n3v3 build <package.n3v3>   # 会自动构建依赖 / builds dependencies first
+```text
+n3v3 build <package.n3v3>   # future package file / 未来的包文件
 ```
 
 ### 查看包信息 / Show Package Info
@@ -166,15 +157,10 @@ sha256sum musl-1.2.4.tar.gz
 2. **类型系统**: 强类型,Hindley-Milner 推导
 3. **兼容性**: 不兼容 nixpkgs,从零构建生态
 
-## 贡献指南 / Contributing
+## Future contributions / 未来的贡献方向
 
-添加新的 bootstrap 示例包:
-
-1. 在 `examples/` 下创建 `.n3v3` 文件（例如新的 `examples/<name>.n3v3`）
-2. 遵循现有示例的结构
-3. 确保包含所有必要的元数据
-4. 测试构建过程
-5. 提交 Pull Request
+Once runnable bootstrap packages exist, contributors should add a checked `.n3v3` file under `examples/`, specify real source hashes and dependencies, verify the build, and only then propose a pull request.
+待 bootstrap 包具备可运行定义后，贡献者应在 `examples/` 中添加已验证的 `.n3v3` 文件，填写真实源哈希及依赖，验证构建后再提交 Pull Request。
 
 ## 参考资料 / References
 

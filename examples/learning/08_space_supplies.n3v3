@@ -1,0 +1,30 @@
+-- Score a space mission without files, effects, or external data.
+-- 不依赖文件、副作用或外部数据，为太空任务计算补给得分。
+supplies = [{ name = "oxygen", units = 4 }, { name = "water", units = 2 }, { name = "spare parts", units = 0 }]
+
+-- Pattern matching assigns different points to each supply.
+-- 模式匹配为不同补给分配不同分值。
+score(item: _) = match item.name {
+  "oxygen" -> item.units * 3,
+  "water" -> item.units * 2,
+  _ -> item.units,
+}
+
+-- Match every list shape, including an empty manifest.
+-- 匹配所有列表形状，包括空清单。
+sum_scores(items: _) = match items {
+  [] -> 0,
+  [item, ..rest] -> score(item) + sum_scores(rest),
+}
+
+-- A comprehension keeps only supplies actually on board.
+-- 列表推导仅保留确实装上飞船的补给。
+loaded = [item | item <- supplies, item.units > 0]
+
+-- Pipe the loaded manifest into the pure scorer.
+-- 将已装载清单通过管道送入纯函数计分。
+total = loaded |> sum_scores
+
+report = { mission = "Orion", score = total, status = if total >= 16 -> "ready" else "resupply" }
+
+result = report.score

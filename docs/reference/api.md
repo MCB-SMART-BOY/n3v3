@@ -76,8 +76,8 @@ list.append<A>(xs: List<A>, ys: List<A>) -> List<A>
 list.reverse<A>(xs: List<A>) -> List<A>
 list.map<A, B>(f: A -> B, xs: List<A>) -> List<B>
 list.filter<A>(pred: A -> Bool, xs: List<A>) -> List<A>
-list.fold<A, B>(init: B, f: B -> A -> B, xs: List<A>) -> B   -- 运行时尚未支持：报 "list.fold requires runtime closure evaluation"
-list.foldRight<A, B>(init: B, f: A -> B -> B, xs: List<A>) -> B   -- 运行时尚未支持（同上）
+list.fold<A, B>(init: B, f: B -> A -> B, xs: List<A>) -> B
+list.foldRight<A, B>(init: B, f: A -> B -> B, xs: List<A>) -> B
 list.sum(xs: List<Int>) -> Int
 list.product(xs: List<Int>) -> Int
 list.sort<A>(xs: List<A>) -> List<A>
@@ -88,6 +88,9 @@ list.replicate<A>(n: Int, value: A) -> List<A>
 list.zip<A, B>(xs: List<A>, ys: List<B>) -> List[(A, B)]
 list.unzip<A, B>(pairs: List[(A, B)]) -> (List<A>, List<B>)
 ```
+
+The type checker accepts `list.fold(init, f, xs)`, but the HIR evaluator treats its second argument as the list; a well-typed call reaches the runtime error `fold expects a list` rather than folding. `list.foldRight` has no HIR evaluator dispatch and is not usable at runtime. The `n3v3-std` closure-evaluation stubs are not the `list.fold` error seen through the CLI pipeline. These limitations do not apply to `list.map` or `list.filter`, which have HIR evaluator dispatch.
+类型检查器接受 `list.fold(init, f, xs)`，但 HIR 求值器把第二个参数当作列表；类型检查通过的调用会在运行时报 `fold expects a list`，而不是进行折叠。`list.foldRight` 没有 HIR 求值器派发，运行时不可用。经 CLI 流水线调用 `list.fold` 时看到的错误并非 `n3v3-std` 的闭包求值桩函数所报。这些限制不适用于已有 HIR 求值器派发的 `list.map` 和 `list.filter`。
 
 
 

@@ -8,14 +8,15 @@ n3v3 is a pure functional language for system configuration, built in Rust. 17 c
 
 ## Build & Test
 
+```bash
 cargo build -p n3v3                     # build CLI
 cargo check --workspace                 # fast validation
 cargo test --workspace                  # all tests
 cargo test --test end_to_end -- --nocapture  # 558 E2E tests
 cargo test --test parser                # 239 parser tests
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all -- --check
-.claude/skills/run-n3v3/driver.sh       # smoke-test all CLI paths
+scripts/validate.sh                     # complete project quality gate
+scripts/validate.sh --quick             # pre-commit quick gates (not a full gate)
+.claude/skills/run-n3v3/driver.sh       # nine CLI smoke scenarios, not all commands
 ```
 
 ## Architecture
@@ -37,7 +38,8 @@ crates/n3v3-fmt/       formatter
 
 ## Syntax (v4 grammar, product v5.0.2)
 
-`let`/`fn`/`;` optional at top level. `use` not `import`. `|x|` not `fn(x)`. `{ }` records (no `#` prefix). `&` record merge and line comments. `type Foo = | A | B` for enums. 12 canonical keywords. The parser retains 10 legacy spellings for source compatibility; only `struct`, `enum`, `super`, and `crate` are emitted as dedicated lexer tokens.
+`let`/`fn`/`;` optional at top level. `use` not `import`. `|x|` not `fn(x)`. `{ }` records (no `#` prefix). `&` merges records in expressions; a lone `&` at line start (after optional whitespace) also starts a legacy line comment. Canonical line comments use `--`; block comments use `-- -- ... -- --`. `type Foo = | A | B` for enums. 12 canonical keywords. The parser retains 10 legacy spellings for source compatibility; only `struct`, `enum`, `super`, and `crate` are emitted as dedicated lexer tokens.
+在表达式内，`&` 用于合并记录；单个 `&` 位于行首（允许前导空白，且下一字符不是 `&`）时也兼容行注释。规范行注释使用 `--`，块注释使用 `-- -- ... -- --`。
 
 v4.0 simplifications: `if cond -> a else b` (was `then`), `use p = alias` (was `as`), `~expr` (was `lazy`), `effect` auto-inferred, `pub` removed (all public).
 

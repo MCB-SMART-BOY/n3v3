@@ -93,6 +93,8 @@ impl HealthCheck for Int {
 ```
 
 `print` 和 `println` 全局可用，不需要 import。字符串插值 `` `你好 {name}` ``。路径字面量 `./foo` 直接就是 `Path` 类型，不是字符串。支持记录更新 `{ old | field = newValue }`，以及 `config & override` 记录合并。
+示例里独占行首的 `&` 是兼容的行注释（允许前导空白）；推荐用 `--` 写行注释、
+`-- -- ... -- --` 写块注释。表达式内的 `&` 是记录合并。
 
 ---
 
@@ -153,14 +155,14 @@ registerSignals() = {
 }
 ```
 
-**重试和条件等待**。当前回调是纯函数；需要重新读取文件、网络或进程状态时，
-不要把一次 I/O 结果捕获成固定布尔值：
+**重试和条件等待**。`io.retry` 在回调报错时重试（返回 `false` 也算成功返回）；
+`io.ensure` 在回调返回 `false` 时反复检查，直到 `true` 或超时。当前回调是纯函数，
+不会自动重新读取文件、网络或进程状态；下面的纯计算只演示调用形式：
 
 ```n3v3-check
 use std.io = io
-attempts = 0
-io.retry(fn() { attempts = attempts + 1; attempts >= 3 }, 5, 1000);
-io.ensure(fn() { attempts >= 3 }, 30000, 500);
+io.retry(fn() { 1 + 1 == 2 }, 5, 1000);
+io.ensure(fn() { 1 + 1 == 2 }, 30000, 500);
 ```
 
 **二进制数据**。`Bytes` 是一等类型：
@@ -241,7 +243,7 @@ n3v3 registry-publish # 发布包需相同令牌；公开服务仍须 TLS/认证
 
 不是说"我们觉得没问题"。`formal/` 目录里有 21 个 Lean 4 模块，核心语义做了机器检查的证明：34 条 EffectEval 规则（v4.3）覆盖了全部 I/O 路径（含 Stream<T> Phase C 5 条规则），全部二元运算符有类型安全证明（含除零规则），管道安全、环境注入防护、缓冲区大小限制共 5 项安全审计全部机器验证。`cd formal && lake build` 一把过。
 
-[语言规范](docs/reference/spec.md) · [功能矩阵](docs/project/feature-matrix.md) · [路线图](.claude/forward-plan.md) · [更新日志](docs/project/changelog.md) · [贡献指南](docs/contributor/contributing.md)
+[入门教程](docs/user/tutorial.md) · [可运行示例索引](examples/README.md) · [语言规范](docs/reference/spec.md) · [功能矩阵](docs/project/feature-matrix.md) · [路线图](.claude/forward-plan.md) · [更新日志](docs/project/changelog.md) · [贡献指南](docs/contributor/contributing.md)
 
 ---
 

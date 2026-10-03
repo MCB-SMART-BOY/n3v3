@@ -24,7 +24,7 @@ covering crate and cross-cutting tooling, kept in sync with the actual code.
 
 ## Start Here
 
-- New user: [user/install.md](user/install.md), [user/quickstart.md](user/quickstart.md), [user/tutorial.md](user/tutorial.md)
+- New user: [user/install.md](user/install.md), [user/quickstart.md](user/quickstart.md), [user/tutorial.md](user/tutorial.md), [runnable examples / 可运行示例](../examples/README.md)
 - Language reference: [reference/spec.md](reference/spec.md), [reference/api.md](reference/api.md), [reference/diagnostics.md](reference/diagnostics.md)
 - Contributor: [contributor/contributing.md](contributor/contributing.md), [contributor/onboarding.md](contributor/onboarding.md), [contributor/architecture.md](contributor/architecture.md)
 - Project and ecosystem: [project/philosophy.md](project/philosophy.md), [project/feature-matrix.md](project/feature-matrix.md), [project/ecosystem-design.md](project/ecosystem-design.md), [project/registry.md](project/registry.md), [project/changelog.md](project/changelog.md)
@@ -40,6 +40,7 @@ covering crate and cross-cutting tooling, kept in sync with the actual code.
 - [user/install.md](user/install.md): installation, platform notes, binary cache setup
 - [user/quickstart.md](user/quickstart.md): quickest path to first expression and file
 - [user/tutorial.md](user/tutorial.md): learn the language surface systematically
+- [examples/README.md](../examples/README.md): index of runnable teaching examples / 可运行教学示例索引
 
 ### I want exact language truth
 
@@ -53,7 +54,7 @@ covering crate and cross-cutting tooling, kept in sync with the actual code.
 - [project/feature-matrix.md](project/feature-matrix.md): real support matrix
 - [project/ecosystem-design.md](project/ecosystem-design.md): flake, store, builder, registry
 - [project/registry.md](project/registry.md): package registry behavior and policy
-- [project/changelog.md](project/changelog.md): release history and pending v5.0.2 changes
+- [project/changelog.md](project/changelog.md): release history, including v5.0.2
 
 ### I want tooling and policy
 

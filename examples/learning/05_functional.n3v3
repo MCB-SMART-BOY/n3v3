@@ -14,10 +14,19 @@ filtered = list.filter(|x| {
   x > 5
 }, [3, 6, 9])
 
-folded = list.fold(0, |acc, x| {
-  acc + x
-}, [1, 2, 3])
+-- The checker and evaluator disagree about list.fold argument order;
+-- 类型检查器与求值器对 list.fold 参数顺序有分歧；
+-- exhaustive list matching is executable in both.
+-- 穷尽的列表匹配在两者中都可以运行。
+sum(xs: List<Int>) -> Int = match xs {
+  [] -> 0,
+  [head, ..rest] -> head + sum(rest),
+}
+
+folded = sum([1, 2, 3])
 
 fact5 = factorial(5)
 
 piped = 10 |> double |> increment
+
+result = folded

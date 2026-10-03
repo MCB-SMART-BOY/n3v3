@@ -17,18 +17,20 @@
 
 # n3v3 Package Registry
 
-> *Package distribution and binary cache for n3v3.*  
-> n3v3 软件包分发和二进制缓存。
-This registry document describes the v5.0.0 implementation. The published CLI package is `n3v3`, and its binary is `n3v3`.
-本文描述 v5.0.0 的注册表实现。已发布的 CLI 软件包名为 `n3v3`，其二进制文件名为 `n3v3`。
+> *Local package discovery and optional binary caching for n3v3.*
+> n3v3 本地软件包发现服务及可选二进制缓存。
+This registry document describes the v5.0.2 implementation. The published CLI package is `n3v3`, and its binary is `n3v3`.
+本文描述 v5.0.2 的注册表实现。已发布的 CLI 软件包名为 `n3v3`，其二进制文件名为 `n3v3`。
 
 ---
 
 ## Overview / 概述
 
-The n3v3 registry (`registry.n3v3.dev`) provides package discovery, distribution, and binary caching for the n3v3 ecosystem. It implements a v1 HTTP API with JSON metadata, NAR archives for build outputs, and optional narinfo signing.
+The built-in registry implements a local v1 HTTP API with JSON metadata and read routes for NAR archives. `registry.n3v3.dev` is a **Planned** public deployment, not an available hosted service. The registry client supports index/search and version metadata resolution, not NAR download or remote installation.
+内置注册表提供本地 v1 HTTP API、JSON 元数据及 NAR 归档读取路由。`registry.n3v3.dev` 的公开部署仍是 **Planned**，不是现有托管服务。注册表客户端支持索引、搜索及版本元数据查询，不会下载 NAR 或远程安装。
 
-The registry is **Experimental** (internal validation). Server and client implementations are available; public hosting, production signing keys, rate limiting, and policy work remain **Planned**.
+The local server/client are **Experimental** for deployment: `n3v3 registry-serve` binds only loopback and requires a token at startup; publishing requests require that token. Public hosting, TLS/auth gateway, production signing keys and operational policy remain **Planned**.
+本地服务/客户端部署层面仍属 **Experimental**：`n3v3 registry-serve` 仅绑定 loopback，启动需令牌，发布请求必须携带令牌。公开托管、TLS/认证网关、生产签名密钥与运维策略仍为 **Planned**。
 
 ## Current State / 当前状态
 
@@ -46,12 +48,12 @@ The registry is **Experimental** (internal validation). Server and client implem
 
 ### Client (registry client library)
 - **Location**: `n3v3-cli/src/registry_client.rs`
-- **Capabilities**: Package index fetching, search, version resolution, NAR download
-- **CLI commands**: `n3v3 registry-update`, `n3v3 search`, `n3v3 package install`
+- **Capabilities**: Package index fetching, search, package and version metadata resolution; no NAR download method
+- **CLI integration**: `n3v3 search` queries v1 search; `n3v3 package install` queries metadata only if a package is absent locally, reports available versions and asks the user to fetch/add to the local store before installing. `n3v3 registry-update` separately fetches the index into a local file (`n3v3-cli/src/commands/registry.rs`).
 
 ### Binary Cache
 - **Location**: `n3v3-cli/src/commands/build.rs`, `crates/n3v3-store/src/cache.rs`
-- **Features**: Content-addressed NAR storage, narinfo signing (ed25519), multi-cache priority
+- **Features**: Content-addressed NAR cache, optional narinfo signing/verification when keys are configured, multi-cache priority; no default signature requirement
 - **CLI flags**: `--cache-url`, `--cache-dir`, `--cache-public-key`, `--cache-private-key`, `--no-substitute`, `--cache-upload`
 
 
@@ -100,12 +102,13 @@ Search is case-insensitive across package names.
 搜索按软件包名称进行大小写不敏感匹配。
 
 ### GET `/v1/<hash>.narinfo`
-Returns signed cache metadata when the corresponding narinfo file exists.
-当对应 narinfo 文件存在时返回已签名的缓存元数据。
+Returns cache metadata; a signature is present only when the cache is configured to sign narinfo.
+返回缓存元数据；仅当缓存配置了 narinfo 签名时才带签名。
 
 ### GET `/v1/nar/<hash>.nar`
-Downloads a NAR archive by content hash.
-按内容哈希下载 NAR 归档。
+
+The server exposes a NAR archive by content hash; this read route is distinct from the registry client's metadata-only functionality.
+服务端按内容哈希提供 NAR 归档读取路由；这与注册表客户端只查询元数据的功能不同。
 
 ### POST `/v1/packages/<name>`
 Publishes version metadata for a package. Set the same `N3V3_REGISTRY_TOKEN` in
@@ -120,9 +123,9 @@ token in the `Authorization: Bearer <token>` header. The token is not printed.
 | Step | Status | Description |
 |------|--------|-------------|
 | Server implementation | Implemented | v1 API routes in `registry_serve.rs` |
-| Client implementation | Implemented | Index fetch, search, version resolution, and install integration |
-| Binary cache | Implemented | NAR signing and multi-cache support |
-| Local testing | Experimental | Loopback-only `n3v3 registry-serve` and `n3v3 registry-publish`; write routes require a shared local bearer token |
+| Client implementation | Implemented | Index fetch, search and version metadata resolution; remote package installation is not implemented |
+| Binary cache | Implemented | Optional NAR signing/verification when keys are configured, plus multi-cache support |
+| Local testing | Experimental | Loopback-only `n3v3 registry-serve` and `n3v3 registry-publish`; server startup requires a token and write routes require bearer authentication |
 | Authentication and TLS termination | Planned | Local token does not replace a TLS/auth gateway or dedicated server for public access |
 | Domain & hosting | Planned | `registry.n3v3.dev` setup |
 | Signing key generation | Planned | Production ed25519 keys |
@@ -146,10 +149,10 @@ token in the `Authorization: Bearer <token>` header. The token is not printed.
 
 ## Security Model / 安全模型
 
-- **NAR integrity**: Build outputs are content-addressed by NAR hash
-- **narinfo signing**: ed25519 signatures prevent cache poisoning
-- **Substitution**: Users control which caches to trust via `--cache-public-key`
-- **Upload signing**: Cache upload requires `--cache-private-key`
+- **NAR integrity**: Cache substitution checks applicable NAR/file hashes against cache metadata; a derivation output's store path is not proof that build bytes are reproducible
+- **narinfo signing**: Ed25519 verification is applied when a cache public key is configured, not required by default
+- **Substitution**: Users explicitly configure cache sources and trusted public keys; without a public key, cache metadata signatures are not enforced
+- **Upload signing**: A configured private key signs narinfo during cache upload; uploads are optional
 - **Server exposure**: cache signatures do not authenticate package-publish HTTP
   requests. The built-in server refuses non-loopback addresses and requires
   `N3V3_REGISTRY_TOKEN` for writes, but local users/processes that can read the
@@ -163,25 +166,25 @@ For local publishing, set a private token in both process environments (avoid
 committing it or placing it in shell history), start `n3v3 registry-serve`,
 then run `n3v3 registry-publish <package-dir> --registry-url http://127.0.0.1:<port>`.
 Use the server's actual port. The URL must be the registry base URL, without
-`/v1`; `registry-publish` posts to `/v1/packages/<name>`. Reads, including
-`package install`, do not need the token. Do not send this token to an
-untrusted URL; use a gateway with TLS and stronger access controls for remote
-deployments.
+`/v1`; `registry-publish` posts to `/v1/packages/<name>`. Reads do not need the
+token. `package install` only queries the registry for version metadata when
+a package is missing locally; it does not download or install a remote version.
+Do not send this token to an untrusted URL; use a gateway with TLS and stronger
+access controls for remote deployments.
 
 ```bash
-# Environment variable
-export N3V3_REGISTRY="https://registry.n3v3.dev"
-
-# CLI usage
+# Point discovery at a registry you operate; set N3V3_REGISTRY to its base URL.
+# The public domain is not yet deployed.
 n3v3 search hello
-n3v3 package install hello
-n3v3 registry-update  # refresh local index
+n3v3 package install hello  # local store only; missing local package lists remote versions
+n3v3 registry-update
 
-# Binary cache
-n3v3 build --cache-url https://cache.n3v3.dev \
-           --cache-public-key ed25519:AAA... \
+# With cache URL and keys supplied via environment variables, a build may
+# substitute from that cache and optionally upload signed metadata.
+n3v3 build --cache-url "$CACHE_URL" \
+           --cache-public-key "$CACHE_PUBLIC_KEY" \
            --cache-upload \
-           --cache-private-key ed25519:BBB...
+           --cache-private-key "$CACHE_PRIVATE_KEY"
 ```
 
 ## Related Files / 相关文件

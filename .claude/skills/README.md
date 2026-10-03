@@ -60,7 +60,7 @@ Source Code (.n3v3)
 | Import alias | `use std.io as io` | `use std.io = io` |
 | Lambda | `\|x\| x + 1` | same |
 | Record | `{ x = 1 }` | same |
-| Comment | `& comment` (also `--` still works) | same |
+| Comment / 注释 | `& comment` at line start (legacy) / 行首（兼容）；`-- comment` | `-- comment` (line / 行), `-- -- ... -- --` (block / 块); line-start `&` remains supported / 行首 `&` 仍可用 |
 | Top-level | `let`/`fn`/`;` optional | same |
 | Record merge | `a & b` | same |
 | If expression | `if cond then a else b` | `if cond -> a else b` |
