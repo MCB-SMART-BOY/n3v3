@@ -1,6 +1,6 @@
 [package]
 name = "n3v3-workspace"
-version = "5.0.1"
+version = "5.0.2"
 edition = "2024"
 license = "MPL-2.0"
 
@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "5.0.1"
+version = "5.0.2"
 edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/MCB-SMART-BOY/n3v3"

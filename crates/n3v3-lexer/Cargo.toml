@@ -7,6 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-n3v3-common = { version = "5.0.1", path = "../n3v3-common" }
-n3v3-diagnostic = { version = "5.0.1", path = "../n3v3-diagnostic" }
+n3v3-common = { version = "5.0.2", path = "../n3v3-common" }
+n3v3-diagnostic = { version = "5.0.2", path = "../n3v3-diagnostic" }
 logos.workspace = true

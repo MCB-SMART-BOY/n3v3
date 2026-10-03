@@ -21,7 +21,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  CROSS_VERSION: '0.2.5'
 
 jobs:
   release-gates:
@@ -97,23 +96,19 @@ jobs:
           # Linux / Linux
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            cross: false
-          - os: ubuntu-latest
+          # Native ARM64 avoids the old glibc in cross's image, which lacks renameat2.
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            cross: true
 
           # macOS / macOS
           - os: macos-latest
             target: x86_64-apple-darwin
-            cross: false
           - os: macos-latest
             target: aarch64-apple-darwin
-            cross: false
 
           # Windows / Windows
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            cross: false
 
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -135,24 +130,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-release-
 
-      - name: Install pinned cross / 安装固定版本 cross
-        if: ${{ matrix.cross }}
-        run: cargo install cross --version "$CROSS_VERSION" --locked
-
       - name: Build binary (Unix) / 构建 Unix 二进制
         if: matrix.os != 'windows-latest'
         run: |
-          set -euo pipefail
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} -p n3v3
-          else
-            cargo build --release --target ${{ matrix.target }} -p n3v3
-          fi
+          cargo build --release --locked --target ${{ matrix.target }} -p n3v3
         shell: bash
 
       - name: Build binary (Windows) / 构建 Windows 二进制
         if: matrix.os == 'windows-latest'
-        run: cargo build --release --target ${{ matrix.target }} -p n3v3
+        run: cargo build --release --locked --target ${{ matrix.target }} -p n3v3
 
       - name: Package binary (Unix) / 打包 Unix 二进制
         if: matrix.os != 'windows-latest'

@@ -14,7 +14,7 @@
 
 </div>
 
-**Current version: v5.0.1**. 12 canonical keywords, 55 diagnostic codes, 558 E2E tests (all pass), 26 LSP methods. Install via `cargo install n3v3`.
+**Current version: v5.0.2** (source checkout, pending release). 12 canonical keywords, 55 diagnostic codes, 558 E2E tests, 26 LSP methods. `cargo install n3v3` currently installs the published v5.0.1.
 
 Welcome to the n3v3 documentation hub. For **developer reference** (per-crate APIs,
 architecture, integration points), see `.claude/skills/` — 13 skill entry points
@@ -53,7 +53,7 @@ covering crate and cross-cutting tooling, kept in sync with the actual code.
 - [project/feature-matrix.md](project/feature-matrix.md): real support matrix
 - [project/ecosystem-design.md](project/ecosystem-design.md): flake, store, builder, registry
 - [project/registry.md](project/registry.md): package registry behavior and policy
-- [project/changelog.md](project/changelog.md): released changes only
+- [project/changelog.md](project/changelog.md): release history and pending v5.0.2 changes
 
 ### I want tooling and policy
 

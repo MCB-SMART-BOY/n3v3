@@ -11,17 +11,17 @@ name = "n3v3"
 path = "src/main.rs"
 
 [dependencies]
-n3v3-common = { version = "5.0.1", path = "../crates/n3v3-common" }
-n3v3-diagnostic = { version = "5.0.1", path = "../crates/n3v3-diagnostic" }
-n3v3-syntax = { version = "5.0.1", path = "../crates/n3v3-syntax" }
-n3v3-parser = { version = "5.0.1", path = "../crates/n3v3-parser" }
-n3v3-hir = { version = "5.0.1", path = "../crates/n3v3-hir" }
-n3v3-typeck = { version = "5.0.1", path = "../crates/n3v3-typeck" }
-n3v3-eval = { version = "5.0.1", path = "../crates/n3v3-eval" }
-n3v3-std = { version = "5.0.1", path = "../crates/n3v3-std" }
-n3v3-fmt = { version = "5.0.1", path = "../crates/n3v3-fmt" }
-n3v3-frontend = { version = "5.0.1", path = "../crates/n3v3-frontend" }
-n3v3-lsp = { version = "5.0.1", path = "../crates/n3v3-lsp" }
+n3v3-common = { version = "5.0.2", path = "../crates/n3v3-common" }
+n3v3-diagnostic = { version = "5.0.2", path = "../crates/n3v3-diagnostic" }
+n3v3-syntax = { version = "5.0.2", path = "../crates/n3v3-syntax" }
+n3v3-parser = { version = "5.0.2", path = "../crates/n3v3-parser" }
+n3v3-hir = { version = "5.0.2", path = "../crates/n3v3-hir" }
+n3v3-typeck = { version = "5.0.2", path = "../crates/n3v3-typeck" }
+n3v3-eval = { version = "5.0.2", path = "../crates/n3v3-eval" }
+n3v3-std = { version = "5.0.2", path = "../crates/n3v3-std" }
+n3v3-fmt = { version = "5.0.2", path = "../crates/n3v3-fmt" }
+n3v3-frontend = { version = "5.0.2", path = "../crates/n3v3-frontend" }
+n3v3-lsp = { version = "5.0.2", path = "../crates/n3v3-lsp" }
 
 clap.workspace = true
 rustyline.workspace = true
@@ -35,10 +35,10 @@ tempfile.workspace = true
 
 # Unix-only dependencies for package management features
 [target.'cfg(unix)'.dependencies]
-n3v3-config = { version = "5.0.1", path = "../crates/n3v3-config" }
-n3v3-store = { version = "5.0.1", path = "../crates/n3v3-store" }
-n3v3-derive = { version = "5.0.1", path = "../crates/n3v3-derive" }
-n3v3-builder = { version = "5.0.1", path = "../crates/n3v3-builder" }
-n3v3-fetch = { version = "5.0.1", path = "../crates/n3v3-fetch" }
+n3v3-config = { version = "5.0.2", path = "../crates/n3v3-config" }
+n3v3-store = { version = "5.0.2", path = "../crates/n3v3-store" }
+n3v3-derive = { version = "5.0.2", path = "../crates/n3v3-derive" }
+n3v3-builder = { version = "5.0.2", path = "../crates/n3v3-builder" }
+n3v3-fetch = { version = "5.0.2", path = "../crates/n3v3-fetch" }
 reqwest = { workspace = true }
 libc.workspace = true
