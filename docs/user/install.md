@@ -64,13 +64,13 @@ irm https://raw.githubusercontent.com/MCB-SMART-BOY/n3v3/master/scripts/install.
 ### Manual Release Install / 手动安装发行版
 
 The v5.0.1 GitHub Release was blocked by the Linux aarch64 cross-link failure,
-so it has no release assets. v5.0.2 provides all five platform archives,
-including Linux aarch64.
+so it has no release assets. v5.0.2 first provided all five platform archives;
+v5.0.3 also provides all five, including Linux aarch64.
 v5.0.1 的 GitHub Release 因 Linux aarch64 交叉链接失败而未创建；
-v5.0.2 提供全部五个平台的发行文件，包括 Linux aarch64。
+v5.0.2 首次提供全部五个平台的发行文件；v5.0.3 也提供全部五个平台的文件，包括 Linux aarch64。
 
-The URLs below track the latest **published** [GitHub Release](https://github.com/MCB-SMART-BOY/n3v3/releases); check its available assets before installing. To install the published v5.0.2 archives explicitly, replace `/releases/latest/download/` with `/releases/download/v5.0.2/`.
-以下 URL 指向最新**已发布**的 [GitHub Release](https://github.com/MCB-SMART-BOY/n3v3/releases)；安装前请查看该版本提供的发行文件。如需明确安装已发布的 v5.0.2 文件，请将 `/releases/latest/download/` 替换为 `/releases/download/v5.0.2/`。
+The URLs below track the latest **published** [GitHub Release](https://github.com/MCB-SMART-BOY/n3v3/releases); check its available assets before installing. To install v5.0.3 explicitly, replace `/releases/latest/download/` with `/releases/download/v5.0.3/`.
+以下 URL 指向最新**已发布**的 [GitHub Release](https://github.com/MCB-SMART-BOY/n3v3/releases)；安装前请查看该版本提供的发行文件。如需明确安装 v5.0.3，请将 `/releases/latest/download/` 替换为 `/releases/download/v5.0.3/`。
 
 ```bash
 # Linux x86_64
@@ -97,8 +97,8 @@ Expand-Archive n3v3.zip -DestinationPath $env:LOCALAPPDATA\n3v3\bin -Force
 
 ### Arch Linux / Arch Linux 用户
 
-Once `n3v3-bin` is listed on the [AUR](https://aur.archlinux.org/packages/n3v3-bin), install it with `yay -S n3v3-bin`. Until then, use Cargo or the published binaries above. A fresh source clone gets the public default branch; check its version before building.
-待 `n3v3-bin` 在 [AUR](https://aur.archlinux.org/packages/n3v3-bin) 上架后，可用 `yay -S n3v3-bin` 安装。在此之前可使用 Cargo 或上文已发布的二进制文件。新克隆得到公开的默认分支；从源码编译前请核对其版本。
+Install [AUR `n3v3-bin`](https://aur.archlinux.org/packages/n3v3-bin) with `yay -S n3v3-bin`, or use Cargo or the published binaries above. A fresh source clone gets the public default branch; check its version before building.
+通过 `yay -S n3v3-bin` 安装 [AUR `n3v3-bin`](https://aur.archlinux.org/packages/n3v3-bin)，也可使用 Cargo 或上文已发布的二进制文件。新克隆得到公开的默认分支；从源码编译前请核对其版本。
 
 ### Build from Source / 从源码编译
 

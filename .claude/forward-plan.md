@@ -3,7 +3,7 @@
 
 ## Current State / 当前状态
 
-The v5.0.0 canonical HIR pipeline remains the implementation baseline in the current v5.0.3 workspace. v5.0.2 was published on crates.io with five GitHub Release archives; consult [crates.io](https://crates.io/crates/n3v3), [GitHub Releases](https://github.com/MCB-SMART-BOY/n3v3/releases), and [AUR `n3v3-bin`](https://aur.archlinux.org/packages/n3v3-bin) for current publication and package availability. The v5.0.1 GitHub Release was blocked by the ARM64 Linux cross-link failure. Current facts are owned by `scripts/counts.sh`:
+The v5.0.0 canonical HIR pipeline remains the implementation baseline in the v5.0.3 workspace. v5.0.3 is published on [crates.io](https://crates.io/crates/n3v3) with five [GitHub Release archives](https://github.com/MCB-SMART-BOY/n3v3/releases/tag/v5.0.3), and [AUR `n3v3-bin`](https://aur.archlinux.org/packages/n3v3-bin) is available. The v5.0.1 GitHub Release was blocked by the ARM64 Linux cross-link failure; v5.0.2 first shipped all five archives. Current facts are owned by `scripts/counts.sh`:
 
 | Fact | Current value |
 |------|---------------|

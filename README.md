@@ -263,4 +263,4 @@ MPL-2.0
 curl -fsSL https://raw.githubusercontent.com/MCB-SMART-BOY/n3v3/master/scripts/install.sh | sh
 ```
 
-Arch 用户可在 AUR 上架 `n3v3-bin` 后使用 `paru -S n3v3-bin`。`cargo install n3v3` 安装 crates.io 上最新已发布的版本；可在 [GitHub Releases](https://github.com/MCB-SMART-BOY/n3v3/releases) 查看最新已发布的二进制文件。v5.0.2 的五个平台发行文件已发布；从当前源码编译：`cargo install --path n3v3-cli --locked`。
+Arch 用户可通过 [AUR `n3v3-bin`](https://aur.archlinux.org/packages/n3v3-bin) 安装：`paru -S n3v3-bin`。`cargo install n3v3` 安装 crates.io 上最新已发布的版本；[GitHub Releases](https://github.com/MCB-SMART-BOY/n3v3/releases) 提供 v5.0.3 的五个平台发行文件。从当前源码编译：`cargo install --path n3v3-cli --locked`。

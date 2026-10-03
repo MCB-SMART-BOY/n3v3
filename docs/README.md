@@ -14,7 +14,7 @@
 
 </div>
 
-**Current version: v5.0.3** (workspace). 12 canonical keywords, 55 diagnostic codes, 558 E2E tests, 26 LSP methods. Check [GitHub Releases](https://github.com/MCB-SMART-BOY/n3v3/releases) and [crates.io](https://crates.io/crates/n3v3) for the latest published versions; `cargo install n3v3` installs the latest published Cargo version. The v5.0.2 release provided all five platform archives. AUR `n3v3-bin` can be installed once listed.
+**Current version: v5.0.3** (workspace and published release). 12 canonical keywords, 55 diagnostic codes, 558 E2E tests, 26 LSP methods. The [GitHub Release](https://github.com/MCB-SMART-BOY/n3v3/releases/tag/v5.0.3) provides five platform archives; `cargo install n3v3` installs the latest published [crates.io](https://crates.io/crates/n3v3) version. Arch Linux users can install [AUR `n3v3-bin`](https://aur.archlinux.org/packages/n3v3-bin).
 
 Welcome to the n3v3 documentation hub. For **developer reference** (per-crate APIs,
 architecture, integration points), see `.claude/skills/` — 13 skill entry points
