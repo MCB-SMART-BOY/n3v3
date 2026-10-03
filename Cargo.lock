@@ -1302,7 +1302,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "clap",
  "libc",
@@ -1333,7 +1333,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3-builder"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "libc",
  "n3v3-derive",
@@ -1348,7 +1348,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3-common"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "libc",
  "num-bigint",
@@ -1357,7 +1357,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3-config"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "libc",
  "n3v3-builder",
@@ -1375,7 +1375,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3-derive"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "blake3",
  "serde",
@@ -1385,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3-diagnostic"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "ariadne",
  "n3v3-common",
@@ -1394,7 +1394,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3-eval"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "libc",
  "n3v3-common",
@@ -1408,7 +1408,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3-fetch"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "flate2",
  "git2",
@@ -1422,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3-fmt"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "n3v3-common",
  "n3v3-diagnostic",
@@ -1432,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3-frontend"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "n3v3-common",
  "n3v3-diagnostic",
@@ -1444,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3-hir"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "n3v3-common",
  "n3v3-diagnostic",
@@ -1454,7 +1454,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3-lexer"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "logos",
  "n3v3-common",
@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3-lsp"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "async-trait",
  "dashmap 6.2.1",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3-parser"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "n3v3-common",
  "n3v3-diagnostic",
@@ -1494,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3-std"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "glob",
  "libc",
@@ -1508,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3-store"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -1526,14 +1526,14 @@ dependencies = [
 
 [[package]]
 name = "n3v3-syntax"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "n3v3-common",
 ]
 
 [[package]]
 name = "n3v3-typeck"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "n3v3-common",
  "n3v3-diagnostic",
@@ -1543,7 +1543,7 @@ dependencies = [
 
 [[package]]
 name = "n3v3-workspace"
-version = "5.0.0"
+version = "5.0.1"
 dependencies = [
  "n3v3-builder",
  "n3v3-common",

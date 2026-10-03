@@ -613,7 +613,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
+        let temp_root = std::env::temp_dir().canonicalize().unwrap();
+        let root = temp_root.join(format!(
             "n3v3-install-link-test-{}-{}",
             std::process::id(),
             nonce
@@ -636,8 +637,9 @@ mod tests {
     #[test]
     fn install_two_packages_keeps_both_commands_and_manifest() {
         let temp = tempfile::tempdir().unwrap();
-        let store = temp.path().join("store");
-        let profile = temp.path().join("home/.n3v3/profile");
+        let root = temp.path().canonicalize().unwrap();
+        let store = root.join("store");
+        let profile = root.join("home/.n3v3/profile");
         for name in ["pkg-a", "pkg-b"] {
             let bin = store.join(name).join("bin");
             fs::create_dir_all(&bin).unwrap();
@@ -661,8 +663,9 @@ mod tests {
     #[test]
     fn install_binary_collision_preserves_current_and_no_partial_generation() {
         let temp = tempfile::tempdir().unwrap();
-        let store = temp.path().join("store");
-        let profile = temp.path().join("home/.n3v3/profile");
+        let root = temp.path().canonicalize().unwrap();
+        let store = root.join("store");
+        let profile = root.join("home/.n3v3/profile");
         for name in ["pkg-a", "pkg-b"] {
             let bin = store.join(name).join("bin");
             fs::create_dir_all(&bin).unwrap();
@@ -686,8 +689,9 @@ mod tests {
     #[test]
     fn install_corrupt_current_manifest_fails_before_generation_creation() {
         let temp = tempfile::tempdir().unwrap();
-        let store = temp.path().join("store");
-        let profile = temp.path().join("home/.n3v3/profile");
+        let root = temp.path().canonicalize().unwrap();
+        let store = root.join("store");
+        let profile = root.join("home/.n3v3/profile");
         fs::create_dir_all(store.join("pkg-a")).unwrap();
         install_at("pkg-a", &store, &profile).unwrap();
         let current = fs::read_link(profile.join("current")).unwrap();
@@ -700,8 +704,9 @@ mod tests {
     #[test]
     fn create_profile_generation_existing_number_preserves_contents() {
         let temp = tempfile::tempdir().unwrap();
-        let store = temp.path().join("store");
-        let profile = temp.path().join("home/.n3v3/profile");
+        let root = temp.path().canonicalize().unwrap();
+        let store = root.join("store");
+        let profile = root.join("home/.n3v3/profile");
         let existing = profile.join("generation-1");
         fs::create_dir_all(&existing).unwrap();
         fs::write(existing.join("user-data"), "keep").unwrap();
@@ -716,8 +721,9 @@ mod tests {
     #[test]
     fn validate_generation_unexpected_binary_fails_closed() {
         let temp = tempfile::tempdir().unwrap();
-        let store = temp.path().join("store");
-        let profile = temp.path().join("home/.n3v3/profile");
+        let root = temp.path().canonicalize().unwrap();
+        let store = root.join("store");
+        let profile = root.join("home/.n3v3/profile");
         fs::create_dir_all(&profile).unwrap();
         let generation = create_profile_generation(&profile, &store, 1, &[]).unwrap();
         symlink("/outside/store", generation.join("bin/unexpected")).unwrap();
@@ -728,10 +734,11 @@ mod tests {
     #[test]
     fn install_store_alias_rejected_before_generation_publication() {
         let temp = tempfile::tempdir().unwrap();
-        let store_dir = temp.path().join("store");
-        let profile = temp.path().join("home/.n3v3/profile");
+        let root = temp.path().canonicalize().unwrap();
+        let store_dir = root.join("store");
+        let profile = root.join("home/.n3v3/profile");
         let store = Store::open_at(store_dir.clone()).unwrap();
-        let source = temp.path().join("source");
+        let source = root.join("source");
         fs::create_dir(&source).unwrap();
         fs::write(source.join("data"), "package").unwrap();
         let package = store.add_dir(&source, "real").unwrap();
@@ -753,8 +760,9 @@ mod tests {
         use std::time::Duration;
 
         let temp = tempfile::tempdir().unwrap();
-        let store_dir = temp.path().join("store");
-        let profile = temp.path().join("home/.n3v3/profile");
+        let root = temp.path().canonicalize().unwrap();
+        let store_dir = root.join("store");
+        let profile = root.join("home/.n3v3/profile");
         fs::create_dir_all(store_dir.join("package")).unwrap();
         let store = Store::open_at(store_dir.clone()).unwrap();
         let lock = store.lock_profiles().unwrap();
@@ -790,18 +798,19 @@ mod tests {
     #[test]
     fn install_two_homes_gc_retains_both_profiles_and_old_generations() {
         let temp = tempfile::tempdir().unwrap();
-        let store_dir = temp.path().join("store");
+        let root = temp.path().canonicalize().unwrap();
+        let store_dir = root.join("store");
         let mut store = Store::open_at(store_dir.clone()).unwrap();
         let mut packages = Vec::new();
         for name in ["first", "second", "third"] {
-            let source = temp.path().join(name);
+            let source = root.join(name);
             fs::create_dir(&source).unwrap();
             fs::write(source.join("data"), name).unwrap();
             packages.push(store.add_dir(&source, name).unwrap());
         }
         let garbage = store.add_content(b"unused", "unused").unwrap();
-        let profile_a = temp.path().join("home-a/.n3v3/profile");
-        let profile_b = temp.path().join("home-b/.n3v3/profile");
+        let profile_a = root.join("home-a/.n3v3/profile");
+        let profile_b = root.join("home-b/.n3v3/profile");
         install_at(&packages[0].display_name(), &store_dir, &profile_a).unwrap();
         install_at(&packages[1].display_name(), &store_dir, &profile_a).unwrap();
         install_at(&packages[2].display_name(), &store_dir, &profile_b).unwrap();

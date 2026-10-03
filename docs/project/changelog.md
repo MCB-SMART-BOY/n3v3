@@ -23,6 +23,15 @@ Based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [5.0.1] - 2026-10-03
+
+### Fixed
+- **Cross-platform CI**: test fixtures use canonical temporary roots on macOS and Windows so a system `/var` symlink or a Windows temporary-path spelling is not mistaken for an attacker-controlled alias. Explicit symlink rejection tests remain intact.
+- **Platform boundaries**: Windows tests assert that `OsHost` is unsupported; non-Linux cache-fetch tests assert fail-closed atomic publication without creating a store entry. Linux continues to exercise successful verified cache fetches.
+
+### Changed
+- **Release metadata**: workspace and internal crate requirements advance to v5.0.1; the v4 language syntax and public AST/HIR contract do not change.
+
 ## [5.0.0] - 2026-10-03
 
 ### Breaking

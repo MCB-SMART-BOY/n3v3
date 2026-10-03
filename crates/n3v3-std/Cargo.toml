@@ -9,10 +9,10 @@ repository.workspace = true
 [dependencies]
 glob = "0.3"
 rpassword = "7"
-n3v3-common = { version = "5.0.0", path = "../n3v3-common" }
-n3v3-eval = { version = "5.0.0", path = "../n3v3-eval" }
-n3v3-derive = { version = "5.0.0", path = "../n3v3-derive" }
-n3v3-fetch = { version = "5.0.0", path = "../n3v3-fetch" }
+n3v3-common = { version = "5.0.1", path = "../n3v3-common" }
+n3v3-eval = { version = "5.0.1", path = "../n3v3-eval" }
+n3v3-derive = { version = "5.0.1", path = "../n3v3-derive" }
+n3v3-fetch = { version = "5.0.1", path = "../n3v3-fetch" }
 sha2.workspace = true
 
 [target.'cfg(unix)'.dependencies]

@@ -35,7 +35,7 @@ crates/n3v3-lsp/       Language Server (26 methods)
 crates/n3v3-fmt/       formatter
 ```
 
-## Syntax (v4 grammar, product v5.0.0)
+## Syntax (v4 grammar, product v5.0.1)
 
 `let`/`fn`/`;` optional at top level. `use` not `import`. `|x|` not `fn(x)`. `{ }` records (no `#` prefix). `&` record merge and line comments. `type Foo = | A | B` for enums. 12 canonical keywords. The parser retains 10 legacy spellings for source compatibility; only `struct`, `enum`, `super`, and `crate` are emitted as dedicated lexer tokens.
 
@@ -79,4 +79,4 @@ truth. `scripts/check-docs.sh` mechanically checks documentation claims.
 
 ## Current Status
 
-v5.0.0. 558 E2E tests (all pass). 26 LSP methods (19 requests + 7 notifications; `did_change_configuration` and `did_change_watched_files` are stubs and require a server restart). 13 Stream<T> APIs. 55 error codes. 12 canonical keywords. Public AST enums are `#[non_exhaustive]`; AST/HIR unsupported-node handling is explicit. Audit grade B+ → A- (62/62 fixed). All milestones complete. Published on crates.io as `n3v3` (`cargo install n3v3`).
+v5.0.1. 558 E2E tests (all pass). 26 LSP methods (19 requests + 7 notifications; `did_change_configuration` and `did_change_watched_files` are stubs and require a server restart). 13 Stream<T> APIs. 55 error codes. 12 canonical keywords. Public AST enums are `#[non_exhaustive]`; AST/HIR unsupported-node handling is explicit. Audit grade B+ → A- (62/62 fixed). All milestones complete. Published on crates.io as `n3v3` (`cargo install n3v3`).

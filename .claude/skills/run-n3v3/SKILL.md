@@ -113,7 +113,7 @@ cargo fmt --all -- --check
   grammar/queries. It may report fewer checks outside a full checkout.
 - **Version output must match the workspace `Cargo.toml` version.** Run
   `n3v3 --version` and use `./scripts/counts.sh` to verify the current
-  version (`v5.0.0`).
+  version (`v5.0.1`).
 
 ## Troubleshooting
 

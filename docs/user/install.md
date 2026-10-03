@@ -110,7 +110,7 @@ sudo install -m 755 target/release/n3v3 /usr/local/bin/n3v3
 ## Verify Installation / 验证安装
 
 ```bash
-n3v3 --version          # prints: n3v3 5.0.0 / 输出：n3v3 5.0.0
+n3v3 --version          # prints: n3v3 5.0.1 / 输出：n3v3 5.0.1
 n3v3 info --platform    # Check platform capabilities / 查看平台支持
 n3v3 repl               # Start interactive REPL / 启动 REPL
 n3v3 eval "1 + 2"       # Evaluate expression / 计算表达式

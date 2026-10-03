@@ -496,8 +496,9 @@ mod tests {
     #[test]
     fn dry_run_retained_generations_and_reference_closure_survive() {
         let temp = tempfile::tempdir().unwrap();
-        let mut store = Store::open_at(temp.path().join("store")).unwrap();
-        let profile = temp.path().join("home/.n3v3/profile");
+        let root = temp.path().canonicalize().unwrap();
+        let mut store = Store::open_at(root.join("store")).unwrap();
+        let profile = root.join("home/.n3v3/profile");
         let first = store.add_content(b"first", "first").unwrap();
         let second = store.add_content(b"second", "second").unwrap();
         let referenced = store.add_content(b"reference", "reference").unwrap();
@@ -546,7 +547,8 @@ mod tests {
     #[test]
     fn collect_same_content_different_named_roots_retains_both() {
         let temp = tempfile::tempdir().unwrap();
-        let mut store = Store::open_at(temp.path().join("store")).unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let mut store = Store::open_at(root.join("store")).unwrap();
         let first = store.add_content(b"shared", "a").unwrap();
         let second = store.add_content(b"shared", "b").unwrap();
         let garbage = store.add_content(b"garbage", "garbage").unwrap();
@@ -569,7 +571,8 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let temp = tempfile::tempdir().unwrap();
-        let mut store = Store::open_at(temp.path().join("store")).unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let mut store = Store::open_at(root.join("store")).unwrap();
         let dependency = store.add_content(b"dependency", "dep@1").unwrap();
         let transitive = store.add_content(b"transitive", "transitive").unwrap();
         let content = store.add_content(b"content", "content@2").unwrap();
@@ -587,7 +590,7 @@ mod tests {
             store.to_path(&content).to_string_lossy().as_bytes(),
         )
         .unwrap();
-        let profile = temp.path().join("home/.n3v3/profile");
+        let profile = root.join("home/.n3v3/profile");
         fs::create_dir_all(profile.join("generation-1")).unwrap();
         fs::write(
             profile.join("generation-1/manifest"),
@@ -611,12 +614,13 @@ mod tests {
         use std::os::unix::net::UnixListener;
 
         let temp = tempfile::tempdir().unwrap();
-        let mut store = Store::open_at(temp.path().join("store")).unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let mut store = Store::open_at(root.join("store")).unwrap();
         let garbage = store.add_content(b"garbage", "garbage").unwrap();
         let plain = store.root().join("plain-pkg");
         fs::create_dir(&plain).unwrap();
         let _socket = UnixListener::bind(plain.join("unscannable")).unwrap();
-        let profile = temp.path().join("home/.n3v3/profile");
+        let profile = root.join("home/.n3v3/profile");
         fs::create_dir_all(profile.join("generation-1")).unwrap();
         fs::write(
             profile.join("generation-1/manifest"),
@@ -641,9 +645,10 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let temp = tempfile::tempdir().unwrap();
-        let mut store = Store::open_at(temp.path().join("store")).unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let mut store = Store::open_at(root.join("store")).unwrap();
         let dependency = store.add_content(b"dependency", "dependency").unwrap();
-        let external = temp.path().join("external");
+        let external = root.join("external");
         fs::create_dir(&external).unwrap();
         fs::write(
             external.join("reference"),
@@ -653,7 +658,7 @@ mod tests {
         let plain = store.root().join("plain-pkg");
         fs::create_dir(&plain).unwrap();
         symlink(&external, plain.join("external")).unwrap();
-        let profile = temp.path().join("home/.n3v3/profile");
+        let profile = root.join("home/.n3v3/profile");
         fs::create_dir_all(profile.join("generation-1")).unwrap();
         fs::write(
             profile.join("generation-1/manifest"),
@@ -675,8 +680,9 @@ mod tests {
     #[test]
     fn dry_run_corrupt_manifest_or_root_fails_closed() {
         let temp = tempfile::tempdir().unwrap();
-        let mut store = Store::open_at(temp.path().join("store")).unwrap();
-        let profile = temp.path().join("home/.n3v3/profile");
+        let root = temp.path().canonicalize().unwrap();
+        let mut store = Store::open_at(root.join("store")).unwrap();
+        let profile = root.join("home/.n3v3/profile");
         let generation = profile.join("generation-1");
         fs::create_dir_all(&generation).unwrap();
         let package = store.add_content(b"package", "package").unwrap();
@@ -704,7 +710,8 @@ mod tests {
     #[test]
     fn collect_two_registered_homes_preserves_every_generation() {
         let temp = tempfile::tempdir().unwrap();
-        let mut store = Store::open_at(temp.path().join("store")).unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let mut store = Store::open_at(root.join("store")).unwrap();
         let first = store.add_content(b"first", "first").unwrap();
         let second = store.add_content(b"second", "second").unwrap();
         let third = store.add_content(b"third", "third").unwrap();
@@ -727,7 +734,7 @@ mod tests {
             ("home-a", vec![(1, &first), (2, &second)]),
             ("home-b", vec![(1, &third)]),
         ] {
-            let profile = temp.path().join(home).join(".n3v3/profile");
+            let profile = root.join(home).join(".n3v3/profile");
             for (number, package) in generations {
                 let generation = profile.join(format!("generation-{number}"));
                 fs::create_dir_all(&generation).unwrap();
@@ -755,8 +762,9 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let temp = tempfile::tempdir().unwrap();
-        let mut store = Store::open_at(temp.path().join("store")).unwrap();
-        let outside = temp.path().join("outside");
+        let root = temp.path().canonicalize().unwrap();
+        let mut store = Store::open_at(root.join("store")).unwrap();
+        let outside = root.join("outside");
         fs::create_dir(&outside).unwrap();
         fs::write(outside.join("sentinel"), b"outside contents are not freed").unwrap();
 
@@ -788,10 +796,11 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let temp = tempfile::tempdir().unwrap();
-        let mut store = Store::open_at(temp.path().join("store")).unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let mut store = Store::open_at(root.join("store")).unwrap();
         let dependency = store.add_content(b"dependency", "dependency").unwrap();
         let garbage = store.add_content(b"garbage", "garbage").unwrap();
-        let source = temp.path().join("source");
+        let source = root.join("source");
         fs::create_dir(&source).unwrap();
         symlink(store.to_path(&dependency), source.join("dependency")).unwrap();
         let package = store.add_dir(&source, "package").unwrap();
@@ -799,7 +808,7 @@ mod tests {
         let package_info = database.query(&package).unwrap().unwrap();
         assert!(package_info.references.contains(&dependency));
         fs::remove_file(database.info_path(&package)).unwrap();
-        let profile = temp.path().join("home/.n3v3/profile");
+        let profile = root.join("home/.n3v3/profile");
         fs::create_dir_all(profile.join("generation-1")).unwrap();
         fs::write(
             profile.join("generation-1/manifest"),
@@ -822,9 +831,10 @@ mod tests {
     #[test]
     fn collect_malformed_registered_profile_aborts_without_deleting() {
         let temp = tempfile::tempdir().unwrap();
-        let mut store = Store::open_at(temp.path().join("store")).unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let mut store = Store::open_at(root.join("store")).unwrap();
         let garbage = store.add_content(b"garbage", "garbage").unwrap();
-        let outside = temp.path().join("private");
+        let outside = root.join("private");
         fs::write(&outside, "do not read or delete").unwrap();
         let registry = store.root().join(".profiles");
         fs::create_dir(&registry).unwrap();
@@ -851,11 +861,12 @@ mod tests {
     #[test]
     fn dry_run_alias_manifest_aborts_instead_of_losing_real_package() {
         let temp = tempfile::tempdir().unwrap();
-        let mut store = Store::open_at(temp.path().join("store")).unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let mut store = Store::open_at(root.join("store")).unwrap();
         let real = store.add_content(b"real", "real").unwrap();
         let alias = store.root().join(format!("{}-alias", Hash::of(b"alias")));
         std::os::unix::fs::symlink(store.to_path(&real), &alias).unwrap();
-        let profile = temp.path().join("home/.n3v3/profile");
+        let profile = root.join("home/.n3v3/profile");
         let generation = profile.join("generation-1");
         fs::create_dir_all(&generation).unwrap();
         fs::write(

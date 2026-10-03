@@ -16,7 +16,7 @@
 
 ## API Stability Tiers
 
-This document defines the stability guarantees for the n3v3 standard library (stdlib), platform support, and compiler-facing AST APIs. Current release is v5.0.0 (v4.0 syntax is canonical; legacy keywords accepted for backward compatibility). Breaking changes to stable APIs will only occur with a major version bump.
+This document defines the stability guarantees for the n3v3 standard library (stdlib), platform support, and compiler-facing AST APIs. Current release is v5.0.1 (v4.0 syntax is canonical; legacy keywords accepted for backward compatibility). Breaking changes to stable APIs will only occur with a major version bump.
 
 ## Tier 1: Stable ✅
 
@@ -284,8 +284,8 @@ When a Tier 2 API needs a breaking change, the old API must:
 ### Tier Definitions
 
 - **Tier 1 (Linux)**: Full support. All features work. All tests run. Release binaries available. This is the primary development target.
-- **Tier 2 (macOS)**: Near-full language support. Sandbox uses Docker backend. System config and package management unavailable (requires Linux namespaces). Core language tests run in CI.
-- **Tier 3 (Windows)**: Language core only (lexer, parser, HIR, typeck, eval, fmt, LSP). Signal handling, TTY, sandbox, system config, package management, and registry are unavailable. Limited CI coverage (5 language crates only).
+- **Tier 2 (macOS)**: Near-full language support. Sandbox uses Docker backend. System config and package management unavailable (requires Linux namespaces); verified cache fetch cannot publish store entries without Linux `renameat2(RENAME_NOREPLACE)`. CI runs workspace tests.
+- **Tier 3 (Windows)**: Language core only (lexer, parser, HIR, typeck, eval, fmt, LSP). Signal handling, TTY, sandbox, system config, package management, and registry are unavailable. `OsHost` is unsupported, and verified cache fetch cannot publish store entries. CI runs workspace tests, including fail-closed platform-boundary cases.
 
 ### What Each Tier Gets
 
@@ -304,7 +304,7 @@ When a Tier 2 API needs a breaking change, the old API must:
 | System config (generations) | ✅ | ❌ | ❌ |
 | Package management | ✅ | ❌ | ❌ |
 | Registry client | ✅ | ❌ | ❌ |
-| Full CI test suite | ✅ | ✅ (lang) | ⚠️ (5 crates) |
+| Full CI test suite | ✅ | ✅ (workspace tests; unsupported operations assert rejection) | ✅ (workspace tests; unsupported operations assert rejection) |
 | Release binaries | ✅ | ✅ | ✅ |
 
 ### Promotion Path

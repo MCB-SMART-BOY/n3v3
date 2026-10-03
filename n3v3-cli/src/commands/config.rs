@@ -1113,14 +1113,15 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
+        let temp_root = std::env::temp_dir().canonicalize().unwrap();
+        let dir = temp_root.join(format!(
             "n3v3-config-command-test-{}-{}-{}",
             prefix,
             std::process::id(),
             nonce
         ));
-        let _ = fs::create_dir_all(&dir);
-        dir
+        fs::create_dir_all(&dir).unwrap();
+        fs::canonicalize(dir).unwrap()
     }
 
     fn dummy_generation(path: PathBuf, number: u64) -> Generation {
@@ -1385,7 +1386,8 @@ mod tests {
     #[test]
     fn preview_generation_keeps_current_and_active_pointers() {
         let root = tempfile::tempdir().unwrap();
-        let manager = GenerationManager::new(root.path().to_path_buf()).unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let manager = GenerationManager::new(root_path).unwrap();
         let store = StorePath::new(DeriveHash::of(b"config"), "config".to_string());
         let generated = GeneratedConfig::new();
         prepare_and_publish_generation(&manager, 1, &store, GenerationMetadata::new(), &generated)
@@ -1523,7 +1525,8 @@ mod tests {
     fn build_staging_shared_or_symlink_directory_is_rejected() {
         use std::os::unix::fs::{PermissionsExt, symlink};
         let root = tempfile::tempdir().unwrap();
-        let shared = root.path().join("shared");
+        let root_path = root.path().canonicalize().unwrap();
+        let shared = root_path.join("shared");
         fs::create_dir(&shared).unwrap();
         fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
         assert!(
@@ -1531,7 +1534,7 @@ mod tests {
                 .unwrap_err()
                 .contains("Unsafe")
         );
-        let alias = root.path().join("alias");
+        let alias = root_path.join("alias");
         symlink(&shared, &alias).unwrap();
         assert!(
             check_private_staging(&alias)
@@ -1544,7 +1547,8 @@ mod tests {
     fn build_staging_custom_missing_directory_is_created_privately() {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
-        let custom = root.path().join("custom-build");
+        let root_path = root.path().canonicalize().unwrap();
+        let custom = root_path.join("custom-build");
         let canonical = check_private_staging(&custom).unwrap();
         assert_eq!(canonical, custom);
         assert_eq!(
@@ -1557,8 +1561,9 @@ mod tests {
     fn build_staging_default_is_private_unique_and_removed_on_drop() {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
-        let first = create_default_staging(root.path()).unwrap();
-        let second = create_default_staging(root.path()).unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let first = create_default_staging(&root_path).unwrap();
+        let second = create_default_staging(&root_path).unwrap();
         assert_ne!(first.path, second.path);
         assert_eq!(
             fs::metadata(&first.path).unwrap().permissions().mode() & 0o777,
@@ -1574,9 +1579,10 @@ mod tests {
     fn snapshot_artifacts_are_private_at_creation() {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
-        let generation = root.path().join("generation-1");
+        let root_path = root.path().canonicalize().unwrap();
+        let generation = root_path.join("generation-1");
         fs::create_dir(&generation).unwrap();
-        let source = root.path().join("shadow");
+        let source = root_path.join("shadow");
         fs::write(&source, "alice:hash\n").unwrap();
         let mut generated = GeneratedConfig::new();
         generated.files.push(GeneratedFile {
@@ -1607,7 +1613,8 @@ mod tests {
     #[test]
     fn rollback_with_missing_intermediate_generation_selects_retained_snapshot() {
         let root = tempfile::tempdir().unwrap();
-        let manager = GenerationManager::new(root.path().to_path_buf()).unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let manager = GenerationManager::new(root_path.clone()).unwrap();
         let store = StorePath::new(DeriveHash::of(b"config"), "config".to_string());
         let generated = GeneratedConfig::new();
         for number in 1..=3 {
@@ -1620,7 +1627,7 @@ mod tests {
             )
             .unwrap();
         }
-        std::fs::remove_dir_all(root.path().join("generations/generation-2")).unwrap();
+        std::fs::remove_dir_all(root_path.join("generations/generation-2")).unwrap();
 
         assert_eq!(previous_retained_generation(&manager, 3).unwrap().number, 1);
         assert!(previous_retained_generation(&manager, 1).is_err());
@@ -1629,7 +1636,8 @@ mod tests {
     #[test]
     fn build_failed_activation_restores_active_and_preserves_latest_build() {
         let root = tempfile::tempdir().unwrap();
-        let manager = GenerationManager::new(root.path().to_path_buf()).unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let manager = GenerationManager::new(root_path).unwrap();
         let store = StorePath::new(DeriveHash::of(b"config"), "config".to_string());
         let generated = GeneratedConfig::new();
         prepare_and_publish_generation(&manager, 1, &store, GenerationMetadata::new(), &generated)
@@ -1650,7 +1658,8 @@ mod tests {
     #[test]
     fn incomplete_cleanup_does_not_remove_current_generation() {
         let root = tempfile::tempdir().unwrap();
-        let manager = GenerationManager::new(root.path().to_path_buf()).unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let manager = GenerationManager::new(root_path).unwrap();
         let store = StorePath::new(DeriveHash::of(b"config"), "config".to_string());
         let generated = GeneratedConfig::new();
         let generation = prepare_and_publish_generation(

@@ -14,7 +14,7 @@
 
 </div>
 
-**Current version: v5.0.0**. 12 canonical keywords, 55 diagnostic codes, 558 E2E tests (all pass), 26 LSP methods. Install via `cargo install n3v3`.
+**Current version: v5.0.1**. 12 canonical keywords, 55 diagnostic codes, 558 E2E tests (all pass), 26 LSP methods. Install via `cargo install n3v3`.
 
 Welcome to the n3v3 documentation hub. For **developer reference** (per-crate APIs,
 architecture, integration points), see `.claude/skills/` — 13 skill entry points

@@ -810,6 +810,7 @@ mod tests {
         assert!(error.to_string().contains("missing.n3v3"));
         assert!(error.source().is_some());
     }
+    #[cfg(unix)]
     #[test]
     fn os_host_rejects_unscoped_paths() {
         let root = std::env::current_dir().expect("test current directory");
@@ -823,6 +824,15 @@ mod tests {
         assert!(matches!(
             host.read_file("../Cargo.toml"),
             Err(HostError::PathDenied { .. })
+        ));
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn os_host_rejects_unsupported_platform() {
+        assert!(matches!(
+            OsHost::new(std::env::current_dir().expect("test current directory")),
+            Err(HostError::UnsupportedPlatform)
         ));
     }
 }

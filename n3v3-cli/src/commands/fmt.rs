@@ -172,7 +172,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().expect("temporary directory");
-        let path = dir.path().join("script.n3v3");
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("script.n3v3");
         let shebang = "#!/usr/bin/env n3v3 run\n";
         std::fs::write(&path, format!("{shebang}let value=1\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o751)).unwrap();
@@ -195,23 +196,25 @@ mod tests {
 
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
-        let inside_path = root.path().join("inside.txt");
-        let outside_path = outside.path().join("outside.n3v3");
-        let ordinary_path = root.path().join("ordinary.n3v3");
+        let root_path = root.path().canonicalize().unwrap();
+        let outside_path_root = outside.path().canonicalize().unwrap();
+        let inside_path = root_path.join("inside.txt");
+        let outside_path = outside_path_root.join("outside.n3v3");
+        let ordinary_path = root_path.join("ordinary.n3v3");
         let raw = "let value=1\n";
         std::fs::write(&inside_path, raw).unwrap();
         std::fs::write(&outside_path, raw).unwrap();
         std::fs::write(&ordinary_path, raw).unwrap();
-        symlink(&inside_path, root.path().join("linked-inside.n3v3")).unwrap();
-        symlink(&outside_path, root.path().join("linked-outside.n3v3")).unwrap();
+        symlink(&inside_path, root_path.join("linked-inside.n3v3")).unwrap();
+        symlink(&outside_path, root_path.join("linked-outside.n3v3")).unwrap();
 
-        format_dir(root.path().to_str().unwrap(), true).unwrap();
+        format_dir(root_path.to_str().unwrap(), true).unwrap();
         assert_ne!(std::fs::read_to_string(ordinary_path).unwrap(), raw);
 
         assert_eq!(std::fs::read_to_string(&inside_path).unwrap(), raw);
         assert_eq!(std::fs::read_to_string(&outside_path).unwrap(), raw);
         assert_eq!(
-            std::fs::read_to_string(root.path().join("linked-inside.n3v3")).unwrap(),
+            std::fs::read_to_string(root_path.join("linked-inside.n3v3")).unwrap(),
             raw
         );
     }
@@ -223,28 +226,26 @@ mod tests {
 
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
-        let inside = root.path().join("nested");
+        let root_path = root.path().canonicalize().unwrap();
+        let outside_path_root = outside.path().canonicalize().unwrap();
+        let inside = root_path.join("nested");
         std::fs::create_dir(&inside).unwrap();
-        std::fs::create_dir(outside.path().join("child")).unwrap();
-        let outside_path = outside.path().join("outside.n3v3");
+        std::fs::create_dir(outside_path_root.join("child")).unwrap();
+        let outside_path = outside_path_root.join("outside.n3v3");
         std::fs::write(&outside_path, "let value=1\n").unwrap();
-        symlink(outside.path(), root.path().join("external-dir")).unwrap();
-        symlink(root.path(), inside.join("cycle")).unwrap();
+        symlink(&outside_path_root, root_path.join("external-dir")).unwrap();
+        symlink(&root_path, inside.join("cycle")).unwrap();
 
-        format_dir(root.path().to_str().unwrap(), true).unwrap();
+        format_dir(root_path.to_str().unwrap(), true).unwrap();
 
         assert_eq!(
             std::fs::read_to_string(outside_path).unwrap(),
             "let value=1\n"
         );
-        let error =
-            format_dir(root.path().join("external-dir").to_str().unwrap(), true).unwrap_err();
+        let error = format_dir(root_path.join("external-dir").to_str().unwrap(), true).unwrap_err();
         assert!(error.contains("Refusing symlinked directory"));
-        let error = format_dir(
-            root.path().join("external-dir/child").to_str().unwrap(),
-            true,
-        )
-        .unwrap_err();
+        let error =
+            format_dir(root_path.join("external-dir/child").to_str().unwrap(), true).unwrap_err();
         assert!(error.contains("Refusing symlinked directory"));
     }
 }

@@ -24,8 +24,9 @@
 n3v3 inherits Nix's soul (purity, reproducibility, declarative) but sheds its legacy. No compatibility with nixpkgs. No compromises. A clean slate.
 
 n3v3 继承了 Nix 的核心理念（纯函数、可复现、声明式），但甩掉了历史包袱。不兼容 nixpkgs，不妥协，从头来过。
-Current product release: v5.0.0.  
-当前产品版本：v5.0.0。
+Current product release: v5.0.1.
+
+当前产品版本：v5.0.1。
 
 > "Inherit and surpass" — that's the goal. / 继承，然后超越。
 

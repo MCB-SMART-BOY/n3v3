@@ -2527,6 +2527,7 @@ mod tests {
         assert!(matches!(err, CacheError::Signature(_)));
     }
 
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[test]
     fn test_remote_cache_signed_roundtrip_query_and_fetch() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -2583,6 +2584,7 @@ mod tests {
         assert_eq!(content, b"remote-cache-payload");
     }
 
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[test]
     fn test_remote_cache_roundtrip_fetch_for_add_content_path() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -2662,6 +2664,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[test]
     fn test_remote_cache_roundtrip_fetch_for_add_dir_path() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -2711,6 +2714,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[test]
     fn test_fetch_remote_cache_recursively_fetches_references() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -3179,6 +3183,7 @@ mod tests {
         assert_eq!(victim.request_count("GET", &nar_path), 0);
     }
 
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[test]
     fn remote_nar_same_origin_redirect_preserves_verified_download() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -3418,6 +3423,7 @@ mod tests {
         assert!(queried.url.is_some());
     }
 
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[test]
     fn test_local_cache_roundtrip_fetch_for_add_content_path() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -3459,6 +3465,7 @@ mod tests {
         assert_eq!(fs::read(fetched_path).unwrap(), b"roundtrip-payload");
     }
 
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[test]
     fn test_local_cache_roundtrip_fetch_for_add_dir_path() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -3687,7 +3694,7 @@ mod tests {
         assert!(!temp.path().join("escaped").exists());
     }
     #[test]
-    fn fetch_compressed_size_mismatch_discards_bad_copy_and_allows_retry() {
+    fn fetch_compressed_size_mismatch_discards_bad_copy_before_retry() {
         let temp = tempfile::TempDir::new().unwrap();
         let source = temp.path().join("source");
         fs::write(&source, b"retry payload").unwrap();
@@ -3721,11 +3728,23 @@ mod tests {
                 .exists()
         );
         fs::write(&archive, compressed).unwrap();
-        cache.fetch(&cached).unwrap();
-        assert_eq!(
-            fs::read(cache.store.to_path(&path)).unwrap(),
-            b"retry payload"
-        );
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        {
+            cache.fetch(&cached).unwrap();
+            assert_eq!(
+                fs::read(cache.store.to_path(&path)).unwrap(),
+                b"retry payload"
+            );
+        }
+        #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+        {
+            assert!(matches!(
+                cache.fetch(&cached),
+                Err(CacheError::InvalidManifest(message))
+                    if message.contains("atomic no-replace publication is unavailable")
+            ));
+            assert!(!cache.store.path_exists(&path));
+        }
     }
 
     #[test]
@@ -3785,6 +3804,45 @@ mod tests {
                 "decode must fail on the declared output bound for {format:?}"
             );
         }
+    }
+
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    #[test]
+    fn fetch_when_atomic_publication_unavailable_rejects_without_store_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::write(&source, b"verified payload").unwrap();
+        let nar_data = nar::create_nar(&source).unwrap();
+        let archive = temp.path().join("payload.nar");
+        fs::write(&archive, &nar_data).unwrap();
+        let store_root = temp.path().join("store");
+        let mut cache = BinaryCache::new(Store::open_at(store_root.clone()).unwrap()).unwrap();
+        let path = StorePath::new(nar::hash_path(&source).unwrap(), "package".to_string());
+        let cached = CachedPath {
+            path: path.clone(),
+            derivation: placeholder_derivation("package"),
+            references: Vec::new(),
+            size: nar_data.len() as u64,
+            file_size: Some(nar_data.len() as u64),
+            compression: CompressionFormat::None,
+            url: Some(archive.to_string_lossy().into_owned()),
+            file_hash: Some(format_hash(&Hash::of(&nar_data))),
+            nar_hash: Some(format_hash(&Hash::of(&nar_data))),
+        };
+
+        assert!(matches!(
+            cache.fetch(&cached),
+            Err(CacheError::InvalidManifest(message))
+                if message.contains("atomic no-replace publication is unavailable")
+        ));
+        assert!(!cache.store.path_exists(&path));
+        assert!(
+            Database::open(store_root)
+                .unwrap()
+                .query(&path)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[cfg(all(target_os = "linux", target_env = "gnu"))]

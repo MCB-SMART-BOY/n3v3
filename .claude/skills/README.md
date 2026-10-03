@@ -1,6 +1,6 @@
 # n3v3 Language Development Skills
 
-A comprehensive skill suite for developing the n3v3 functional programming language (v5.0.0).
+A comprehensive skill suite for developing the n3v3 functional programming language (v5.0.1).
 
 ## Available Skills
 
@@ -92,7 +92,7 @@ Source Code (.n3v3)
 | `n3v3-config` | System configuration (generation-based) |
 | `n3v3-derive` | Derivation model + hashing |
 
-## Current Status (v5.0.0)
+## Current Status (v5.0.1)
 
 | Metric | Value |
 |--------|-------|

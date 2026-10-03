@@ -166,7 +166,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
+        let temp_root = std::env::temp_dir().canonicalize().unwrap();
+        let root = temp_root.join(format!(
             "n3v3-remove-link-test-{}-{}",
             std::process::id(),
             nonce
@@ -189,8 +190,9 @@ mod tests {
     #[test]
     fn remove_and_rollback_with_generation_gap_restores_commands() {
         let temp = tempfile::tempdir().unwrap();
-        let store = temp.path().join("store");
-        let profile = temp.path().join("home/.n3v3/profile");
+        let root = temp.path().canonicalize().unwrap();
+        let store = root.join("store");
+        let profile = root.join("home/.n3v3/profile");
         for name in ["pkg-a", "pkg-b"] {
             let bin = store.join(name).join("bin");
             fs::create_dir_all(&bin).unwrap();

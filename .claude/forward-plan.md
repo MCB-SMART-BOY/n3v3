@@ -3,11 +3,11 @@
 
 ## Current State / 当前状态
 
-The v5.0.0 canonical HIR pipeline is the current implementation baseline. Current facts are owned by `scripts/counts.sh`:
+The v5.0.0 canonical HIR pipeline remains the implementation baseline in v5.0.1. Current facts are owned by `scripts/counts.sh`:
 
 | Fact | Current value |
 |------|---------------|
-| Product version | v5.0.0 |
+| Product version | v5.0.1 |
 | E2E tests | 558 E2E tests |
 | LSP surface | 26 LSP methods |
 | Diagnostics | 55 diagnostic codes |
