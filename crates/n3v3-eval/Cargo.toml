@@ -7,11 +7,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-n3v3-common = { version = "5.0.2", path = "../n3v3-common" }
-n3v3-syntax = { version = "5.0.2", path = "../n3v3-syntax" }
-n3v3-hir = { version = "5.0.2", path = "../n3v3-hir" }
-n3v3-diagnostic = { version = "5.0.2", path = "../n3v3-diagnostic" }
-n3v3-derive = { version = "5.0.2", path = "../n3v3-derive" }
+n3v3-common = { version = "5.0.3", path = "../n3v3-common" }
+n3v3-syntax = { version = "5.0.3", path = "../n3v3-syntax" }
+n3v3-hir = { version = "5.0.3", path = "../n3v3-hir" }
+n3v3-diagnostic = { version = "5.0.3", path = "../n3v3-diagnostic" }
+n3v3-derive = { version = "5.0.3", path = "../n3v3-derive" }
 thiserror.workspace = true
 tempfile.workspace = true
 

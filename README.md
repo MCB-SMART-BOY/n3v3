@@ -39,7 +39,7 @@ for i in 1 2 3; do
 done
 ```
 
-这是 n3v3 v5.0.2（语法 v4.0）：
+这是当前工作区的 n3v3 v5.0.3（语法 v4.0）：
 
 ```n3v3-check
 #!/usr/bin/env n3v3 run
@@ -263,4 +263,4 @@ MPL-2.0
 curl -fsSL https://raw.githubusercontent.com/MCB-SMART-BOY/n3v3/master/scripts/install.sh | sh
 ```
 
-Arch 用 AUR 的 `n3v3-bin`：`paru -S n3v3-bin`。源码编译：`cargo install --path n3v3-cli --locked`。
+Arch 用户可在 AUR 上架 `n3v3-bin` 后使用 `paru -S n3v3-bin`。`cargo install n3v3` 安装 crates.io 上最新已发布的版本；可在 [GitHub Releases](https://github.com/MCB-SMART-BOY/n3v3/releases) 查看最新已发布的二进制文件。v5.0.2 的五个平台发行文件已发布；从当前源码编译：`cargo install --path n3v3-cli --locked`。

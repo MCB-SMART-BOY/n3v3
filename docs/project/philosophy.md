@@ -23,9 +23,9 @@
 
 n3v3 draws on Nix's ideals (purity, reproducibility, declarative configuration) without claiming that every current build is isolated or reproducible. It does not aim for nixpkgs compatibility.
 n3v3 借鉴 Nix 的理念（纯函数、可重现、声明式配置），但不宣称当前每次构建都隔离或可重现；不以兼容 nixpkgs 为目标。
-Current product release: v5.0.2.
+Current workspace version: v5.0.3. For published versions, consult [GitHub Releases](https://github.com/MCB-SMART-BOY/n3v3/releases).
 
-当前产品版本：v5.0.2。
+当前工作区版本：v5.0.3。已发布版本请查看 [GitHub Releases](https://github.com/MCB-SMART-BOY/n3v3/releases)。
 
 > "Inherit and surpass" — that's the goal. / 继承，然后超越。
 
@@ -87,9 +87,9 @@ Pure by default; effects are checked at the boundary where they are introduced. 
 
 ### 5. Simplicity / 简洁
 
-A minimal set of keywords (v5.0.2: 12 canonical keywords; the v4.0 syntax cleanup reduced the v1.x set from 21).
+A minimal set of keywords (current v5.0.3 workspace: 12 canonical keywords; the v4.0 syntax cleanup reduced the v1.x set from 21).
 
-精简的关键字集合（v5.0.2：12 个规范关键字；v4.0 语法清理将 v1.x 的 21 个缩减为当前集合）。
+精简的关键字集合（当前 v5.0.3 工作区：12 个规范关键字；v4.0 语法清理将 v1.x 的 21 个缩减为当前集合）。
 
 ```
 let  fn   type  trait  impl  use
@@ -117,7 +117,7 @@ Do one thing well. Compose. Text is universal.
 
 | Area / 领域 | Status | Notes / 说明 |
 |------------|--------|-------------|
-| Language core / 语言核心 | Implemented | v5.0.2 uses canonical v4 syntax; parser/lowering/typeck/eval form one pipeline. Evidence: `crates/n3v3-parser`, `crates/n3v3-hir`, `crates/n3v3-typeck`, `crates/n3v3-eval` |
+| Language core / 语言核心 | Implemented | Workspace v5.0.3 retains the canonical v4 syntax published in v5.0.2; parser/lowering/typeck/eval form one pipeline. Evidence: `crates/n3v3-parser`, `crates/n3v3-hir`, `crates/n3v3-typeck`, `crates/n3v3-eval` |
 | Runtime / 运行时 | Implemented | HIR is the canonical runtime path and the AST compatibility evaluator is removed. Evidence: `crates/n3v3-eval` |
 | Toolchain / 工具链 | Experimental | 26 LSP methods are implemented; `did_change_configuration` and `did_change_watched_files` remain stubs. Evidence: `crates/n3v3-lsp/src/backend.rs` |
 | Package system / 包管理 | Experimental | Fetch/store/builder and local registry are implemented; registry-backed installation only lists versions when the local store misses. Binary-cache signing is optional when keys are configured. Evidence: `n3v3-cli/src/commands/install.rs`, `n3v3-cli/src/registry_client.rs`, `n3v3-cli/src/commands/build.rs` |

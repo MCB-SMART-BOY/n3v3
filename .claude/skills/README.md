@@ -1,6 +1,6 @@
 # n3v3 Language Development Skills
 
-A comprehensive skill suite for developing the n3v3 functional programming language (v5.0.2).
+A comprehensive skill suite for developing the n3v3 functional programming language (current workspace v5.0.3).
 
 ## Available Skills
 
@@ -92,7 +92,7 @@ Source Code (.n3v3)
 | `n3v3-config` | System configuration (generation-based) |
 | `n3v3-derive` | Derivation model + hashing |
 
-## Current Status (v5.0.2)
+## Current Status (workspace v5.0.3)
 
 | Metric | Value |
 |--------|-------|
@@ -107,8 +107,9 @@ Source Code (.n3v3)
 | Lean Modules | 21 Lean modules |
 | Error Codes | 55 diagnostic codes |
 | Keywords | 12 canonical keywords |
-| Release CI | v5.0.2 passed; five GitHub Release archives uploaded |
-| crates.io | v5.0.2 published (`cargo install n3v3`) |
+| Release CI | v5.0.2 passed; five GitHub Release archives uploaded; see [GitHub Releases](https://github.com/MCB-SMART-BOY/n3v3/releases) for the latest release |
+| crates.io | v5.0.2 was published as `n3v3`; check [crates.io](https://crates.io/crates/n3v3) for the latest version (`cargo install n3v3`) |
+| AUR `n3v3-bin` | Check [AUR](https://aur.archlinux.org/packages/n3v3-bin) for package availability before installing |
 
 ## Decisions (2026-06-03)
 

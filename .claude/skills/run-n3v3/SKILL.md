@@ -116,7 +116,8 @@ cargo fmt --all -- --check
   grammar/queries. It may report fewer checks outside a full checkout.
 - **Version output must match the workspace `Cargo.toml` version.** Run
   `n3v3 --version` and use `./scripts/counts.sh` to verify the current
-  version (`v5.0.2`, published on crates.io and GitHub Releases).
+  workspace version (v5.0.3). Check [GitHub Releases](https://github.com/MCB-SMART-BOY/n3v3/releases)
+  and [crates.io](https://crates.io/crates/n3v3) for published versions.
 
 ## Troubleshooting
 

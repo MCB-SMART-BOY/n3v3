@@ -4,7 +4,7 @@
 
 <h1>n3v3 Language Specification — v4 Grammar Syntax</h1>
 
-<p><em>n3v3 language specification — v4 grammar syntax, product v5.0.2 · 语言规范：v4 语法形态，产品 v5.0.2 — 含形式化语义 (Lean-verified)</em></p>
+<p><em>n3v3 language specification — v4 grammar syntax, workspace product v5.0.3 · 语言规范：v4 语法形态，工作区产品 v5.0.3 — 含形式化语义 (Lean-verified)</em></p>
 
 <p>
   <strong><a href="../../README.md">Home</a></strong> ·
@@ -20,8 +20,8 @@
 
 ## Version Context / 版本语境
 
-This specification documents the v4 grammar syntax shipped by product v5.0.2. The product version and grammar version are distinct: v5.0.2 retains the v4 surface syntax shipped in v5.0.1; the AST-to-HIR pipeline became canonical in v5.0.0.
-本规范记录产品 v5.0.2 使用的 v4 语法形态。产品版本与语法版本不同：v5.0.2 保留 v5.0.1 已发布的 v4 表层语法；AST 到 HIR 的流程自 v5.0.0 起作为唯一规范路径。
+This specification documents the v4 grammar syntax of the v5.0.3 workspace. Product version and grammar version are distinct: v5.0.3 preserves the v4 surface syntax published in v5.0.2 (and v5.0.1); the AST-to-HIR pipeline became canonical in v5.0.0. This patch does not change language behavior.
+本规范记录 v5.0.3 工作区使用的 v4 语法形态。产品版本与语法版本不同：v5.0.3 保留 v5.0.2（及 v5.0.1）已发布的 v4 表层语法；AST 到 HIR 的流程自 v5.0.0 起作为唯一规范路径。本次补丁不更改语言行为。
 
 ### v5.0 AST/HIR cutover / v5.0 AST/HIR 切换
 

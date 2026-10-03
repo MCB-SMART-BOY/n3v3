@@ -23,6 +23,12 @@ Based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [5.0.3] - 2026-10-03
+
+### Changed
+- **Documentation and learning materials**: Refresh the language guides, quickstart, tutorial, design and developer references to match the canonical v4 syntax and HIR runtime; expand runnable lessons for modules, functional patterns and the space-supplies exercise. No language behavior changes.
+- **Installation guidance**: Distinguish the current v5.0.3 workspace from the latest published Cargo package and GitHub assets; preserve the five-platform v5.0.2 release history. Document AUR `n3v3-bin` installation as available once its first package is listed.
+
 ## [5.0.2] - 2026-10-03
 
 ### Fixed

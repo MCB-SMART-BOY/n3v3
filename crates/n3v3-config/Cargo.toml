@@ -7,13 +7,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-n3v3-diagnostic = { version = "5.0.2", path = "../n3v3-diagnostic" }
-n3v3-frontend = { version = "5.0.2", path = "../n3v3-frontend" }
-n3v3-eval = { version = "5.0.2", path = "../n3v3-eval" }
-n3v3-derive = { version = "5.0.2", path = "../n3v3-derive" }
-n3v3-store = { version = "5.0.2", path = "../n3v3-store" }
-n3v3-builder = { version = "5.0.2", path = "../n3v3-builder" }
-n3v3-fetch = { version = "5.0.2", path = "../n3v3-fetch" }
+n3v3-diagnostic = { version = "5.0.3", path = "../n3v3-diagnostic" }
+n3v3-frontend = { version = "5.0.3", path = "../n3v3-frontend" }
+n3v3-eval = { version = "5.0.3", path = "../n3v3-eval" }
+n3v3-derive = { version = "5.0.3", path = "../n3v3-derive" }
+n3v3-store = { version = "5.0.3", path = "../n3v3-store" }
+n3v3-builder = { version = "5.0.3", path = "../n3v3-builder" }
+n3v3-fetch = { version = "5.0.3", path = "../n3v3-fetch" }
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true

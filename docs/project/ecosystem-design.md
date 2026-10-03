@@ -17,8 +17,8 @@
 
 # n3v3 Ecosystem Design
 
-This page describes the v5.0.2 ecosystem surface; implementation status is marked as `Implemented`, `Experimental`, or `Planned` and linked to the relevant code or command.
-本文描述 v5.0.2 的生态系统表面；实现状态使用 `Implemented`、`Experimental` 或 `Planned` 标记，并指向对应代码或命令。
+This page describes the v5.0.3 workspace ecosystem surface; implementation status is marked as `Implemented`, `Experimental`, or `Planned` and linked to the relevant code or command. v5.0.2 was published; consult [GitHub Releases](https://github.com/MCB-SMART-BOY/n3v3/releases) for the latest published release.
+本文描述 v5.0.3 工作区生态系统表面；实现状态使用 `Implemented`、`Experimental` 或 `Planned` 标记，并指向对应代码或命令。v5.0.2 已发布；最近发布版本请查看 [GitHub Releases](https://github.com/MCB-SMART-BOY/n3v3/releases)。
 
 ## 1. Architecture
 

@@ -20,15 +20,18 @@
 
 ## Step 1: Install (30 sec) / 第一步：安装（30 秒）
 
+The current workspace is v5.0.3. Pre-built binaries and Cargo install the latest **published** version of each; see the [installation guide](install.md) for platforms and AUR availability.
+当前工作区版本为 v5.0.3。预编译包与 Cargo 各自安装最新**已发布**的版本；各平台选项和 AUR 上架情况见[安装指南](install.md)。
+
 ```bash
-# Pre-built binary (Linux x86_64) / 预编译二进制（Linux x86_64）
+# Latest published binary (Linux x86_64) / 最新已发布的二进制文件（Linux x86_64）
 curl -fsSL https://github.com/MCB-SMART-BOY/n3v3/releases/latest/download/n3v3-x86_64-unknown-linux-gnu.tar.gz | tar xz
 sudo install -m 755 n3v3 /usr/local/bin/n3v3
 
-# Or Arch Linux (AUR package: n3v3-bin) / 或 Arch Linux（AUR 包：n3v3-bin）
-yay -S n3v3-bin
+# Or published Cargo package / 或安装已发布的 Cargo 包
+cargo install n3v3
 
-# From source / 从源码安装
+# From public source (version depends on default branch) / 从公开源码安装（版本依默认分支而定）
 git clone https://github.com/MCB-SMART-BOY/n3v3.git && cd n3v3
 cargo install --path n3v3-cli --locked
 ```

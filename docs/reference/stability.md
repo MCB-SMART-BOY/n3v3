@@ -16,7 +16,7 @@
 
 ## API Stability Tiers
 
-This document defines the stability guarantees for the n3v3 standard library (stdlib), platform support, and compiler-facing AST APIs. Current release is v5.0.2 (v4.0 syntax is canonical; legacy keywords accepted for backward compatibility). Breaking changes to stable APIs will only occur with a major version bump.
+This document defines the stability guarantees for the n3v3 standard library (stdlib), platform support, and compiler-facing AST APIs. Current workspace version is v5.0.3; consult [GitHub Releases](https://github.com/MCB-SMART-BOY/n3v3/releases) for the latest published release. v4.0 syntax is canonical; legacy keywords are accepted for backward compatibility. Breaking changes to stable APIs will only occur with a major version bump.
 
 ## Tier 1: Stable ✅
 

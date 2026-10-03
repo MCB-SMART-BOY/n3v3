@@ -36,7 +36,7 @@ crates/n3v3-lsp/       Language Server (26 methods)
 crates/n3v3-fmt/       formatter
 ```
 
-## Syntax (v4 grammar, product v5.0.2)
+## Syntax (v4 grammar, current workspace product v5.0.3)
 
 `let`/`fn`/`;` optional at top level. `use` not `import`. `|x|` not `fn(x)`. `{ }` records (no `#` prefix). `&` merges records in expressions; a lone `&` at line start (after optional whitespace) also starts a legacy line comment. Canonical line comments use `--`; block comments use `-- -- ... -- --`. `type Foo = | A | B` for enums. 12 canonical keywords. The parser retains 10 legacy spellings for source compatibility; only `struct`, `enum`, `super`, and `crate` are emitted as dedicated lexer tokens.
 在表达式内，`&` 用于合并记录；单个 `&` 位于行首（允许前导空白，且下一字符不是 `&`）时也兼容行注释。规范行注释使用 `--`，块注释使用 `-- -- ... -- --`。
@@ -81,4 +81,4 @@ truth. `scripts/check-docs.sh` mechanically checks documentation claims.
 
 ## Current Status
 
-v5.0.2 is published on crates.io as `n3v3` (`cargo install n3v3`) and has a GitHub Release with five platform archives. 558 E2E tests, 26 LSP methods (19 requests + 7 notifications; `did_change_configuration` and `did_change_watched_files` are stubs and require a server restart), 13 Stream<T> APIs, 55 error codes, 12 canonical keywords. Public AST enums are `#[non_exhaustive]`; AST/HIR unsupported-node handling is explicit. Audit grade B+ → A- (62/62 fixed). All milestones complete. The v5.0.1 GitHub Release was blocked by the old ARM64 cross image; v5.0.2 builds natively on ARM64.
+The current workspace version is v5.0.3. v5.0.2 was published on crates.io as `n3v3` (`cargo install n3v3`) and has a GitHub Release with five platform archives; consult [GitHub Releases](https://github.com/MCB-SMART-BOY/n3v3/releases) and [crates.io](https://crates.io/crates/n3v3) for the latest published versions. 558 E2E tests, 26 LSP methods (19 requests + 7 notifications; `did_change_configuration` and `did_change_watched_files` are stubs and require a server restart), 13 Stream<T> APIs, 55 error codes, 12 canonical keywords. Public AST enums are `#[non_exhaustive]`; AST/HIR unsupported-node handling is explicit. Audit grade B+ → A- (62/62 fixed). All milestones complete. The v5.0.1 GitHub Release was blocked by the old ARM64 cross image; v5.0.2 builds natively on ARM64. Check [AUR `n3v3-bin`](https://aur.archlinux.org/packages/n3v3-bin) for availability before installing.

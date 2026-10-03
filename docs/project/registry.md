@@ -19,8 +19,8 @@
 
 > *Local package discovery and optional binary caching for n3v3.*
 > n3v3 本地软件包发现服务及可选二进制缓存。
-This registry document describes the v5.0.2 implementation. The published CLI package is `n3v3`, and its binary is `n3v3`.
-本文描述 v5.0.2 的注册表实现。已发布的 CLI 软件包名为 `n3v3`，其二进制文件名为 `n3v3`。
+This registry document describes the v5.0.3 workspace implementation. The CLI package published as v5.0.2 was named `n3v3`, with binary `n3v3`; see [crates.io](https://crates.io/crates/n3v3) for currently published versions.
+本文描述 v5.0.3 工作区注册表实现。v5.0.2 发布的 CLI 软件包名为 `n3v3`，其二进制文件名为 `n3v3`；目前已发布的版本请查看 [crates.io](https://crates.io/crates/n3v3)。
 
 ---
 

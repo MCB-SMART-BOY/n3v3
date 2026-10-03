@@ -46,9 +46,8 @@ cargo install n3v3
 This crates.io package is named `n3v3`; it installs the `n3v3` binary.  
 该 crates.io 软件包名为 `n3v3`，安装后提供 `n3v3` 二进制文件。
 
-Requires Rust 1.85+. This is the recommended method for developers.
-`cargo install n3v3` installs the published v5.0.2.
-`cargo install n3v3` 安装已发布的 v5.0.2。
+Requires Rust 1.85+. This is the recommended method for developers. `cargo install n3v3` installs the latest published version on [crates.io](https://crates.io/crates/n3v3); the current workspace version is v5.0.3.
+需要 Rust 1.85 以上。推荐开发者采用此方法。`cargo install n3v3` 安装 [crates.io](https://crates.io/crates/n3v3) 上最新已发布的版本；当前工作区版本为 v5.0.3。
 
 ### Linux / macOS Script / Linux / macOS 脚本安装
 
@@ -69,6 +68,9 @@ so it has no release assets. v5.0.2 provides all five platform archives,
 including Linux aarch64.
 v5.0.1 的 GitHub Release 因 Linux aarch64 交叉链接失败而未创建；
 v5.0.2 提供全部五个平台的发行文件，包括 Linux aarch64。
+
+The URLs below track the latest **published** [GitHub Release](https://github.com/MCB-SMART-BOY/n3v3/releases); check its available assets before installing. To install the published v5.0.2 archives explicitly, replace `/releases/latest/download/` with `/releases/download/v5.0.2/`.
+以下 URL 指向最新**已发布**的 [GitHub Release](https://github.com/MCB-SMART-BOY/n3v3/releases)；安装前请查看该版本提供的发行文件。如需明确安装已发布的 v5.0.2 文件，请将 `/releases/latest/download/` 替换为 `/releases/download/v5.0.2/`。
 
 ```bash
 # Linux x86_64
@@ -95,10 +97,8 @@ Expand-Archive n3v3.zip -DestinationPath $env:LOCALAPPDATA\n3v3\bin -Force
 
 ### Arch Linux / Arch Linux 用户
 
-```bash
-# AUR package: n3v3-bin
-yay -S n3v3-bin
-```
+Once `n3v3-bin` is listed on the [AUR](https://aur.archlinux.org/packages/n3v3-bin), install it with `yay -S n3v3-bin`. Until then, use Cargo or the published binaries above. A fresh source clone gets the public default branch; check its version before building.
+待 `n3v3-bin` 在 [AUR](https://aur.archlinux.org/packages/n3v3-bin) 上架后，可用 `yay -S n3v3-bin` 安装。在此之前可使用 Cargo 或上文已发布的二进制文件。新克隆得到公开的默认分支；从源码编译前请核对其版本。
 
 ### Build from Source / 从源码编译
 
@@ -118,7 +118,7 @@ sudo install -m 755 target/release/n3v3 /usr/local/bin/n3v3
 ## Verify Installation / 验证安装
 
 ```bash
-n3v3 --version          # prints: n3v3 5.0.2 / 输出：n3v3 5.0.2
+n3v3 --version          # Check the version actually installed / 检查实际安装的版本
 n3v3 info --platform    # Check platform capabilities / 查看平台支持
 n3v3 repl               # Start interactive REPL / 启动 REPL
 n3v3 eval "1 + 2"       # Evaluate expression / 计算表达式

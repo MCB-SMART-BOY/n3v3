@@ -4,16 +4,16 @@
 
 <h1>n3v3 Feature Matrix</h1>
 
-<p><em>真实功能支持矩阵（v5.0.2）</em></p>
+<p><em>真实功能支持矩阵（当前工作区 v5.0.3）</em></p>
 
-> **Current release: v5.0.2; canonical HIR pipeline since v5.0.**
+> **Current workspace: v5.0.3; [latest published release](https://github.com/MCB-SMART-BOY/n3v3/releases); canonical HIR pipeline since v5.0.0.**
 > 12 canonical keywords, `let`/`fn`/`;` optional, `use` not `import`,
 > `|x|` not `fn(x)`, `{ }` records, `&` record merge (also a line comment
 > at the start of a line, after optional whitespace), `--` line comments,
 > `if -> else` not `then/else`, `~` not `lazy`, and `pub` removed.
 > The parser retains 10 legacy spellings for source compatibility; only
 > `struct`, `enum`, `super`, and `crate` are dedicated lexer tokens.
-> 当前版本为 v5.0.2；`&` 在表达式中合并记录，仅位于行首（可有前导空白）
+> 当前工作区为 v5.0.3；[最近发布版本](https://github.com/MCB-SMART-BOY/n3v3/releases)以发布页为准；`&` 在表达式中合并记录，仅位于行首（可有前导空白）
 > 且后面不是 `&` 时也可作行注释；`--` 同样可作行注释。
 
 <p>
@@ -46,7 +46,7 @@
 
 ### 这份矩阵目前是什么
 
-这是当前 `v5.0.2` 状态的高风险特性概览，先覆盖**最容易误判为“已经完成”**的特性。
+这是当前 `v5.0.3` 工作区状态的高风险特性概览，先覆盖**最容易误判为“已经完成”**的特性。
 
 它当前重点回答：
 
@@ -67,7 +67,7 @@
 5. **Implemented：13 Stream<T> APIs 已接入标准库与 evaluator；证据为 `scripts/counts.sh` 与 `crates/n3v3-std` / `crates/n3v3-eval`。**
 6. **Experimental：26 LSP methods（19 requests + 7 notifications）已实现；CodeLens 与补全评分排序已接入，`did_change_configuration` 和 `did_change_watched_files` 仍是 stub。证据见 `crates/n3v3-lsp/src/backend.rs`。**
 7. **Implemented (local discovery only)：Registry v1 API 和 RegistryClient 支持搜索/版本元数据查询；`package install` 只安装本地 store 中的包，远程回退仅列出可用版本，尚不会下载或安装远程包。证据见 `n3v3-cli/src/commands/registry_serve.rs`、`n3v3-cli/src/registry_client.rs` 和 `n3v3-cli/src/commands/install.rs`。**
-8. **v5.0.2 使用规范 v4 语法**：12 canonical keywords，`let`/`fn`/`;` 可省略，`|x|` lambda，`{}` record；`&` 是 record merge，也可在行首作注释；`--` 作行注释；`pub` 已移除。
+8. **当前 v5.0.3 工作区使用规范 v4 语法**：12 canonical keywords，`let`/`fn`/`;` 可省略，`|x|` lambda，`{}` record；`&` 是 record merge，也可在行首作注释；`--` 作行注释；`pub` 已移除。
 
 ## 语言高风险特性矩阵 / High-Risk Language Features
 

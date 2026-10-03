@@ -7,9 +7,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-n3v3-common = { version = "5.0.2", path = "../n3v3-common" }
-n3v3-diagnostic = { version = "5.0.2", path = "../n3v3-diagnostic" }
-n3v3-syntax = { version = "5.0.2", path = "../n3v3-syntax" }
-n3v3-parser = { version = "5.0.2", path = "../n3v3-parser" }
+n3v3-common = { version = "5.0.3", path = "../n3v3-common" }
+n3v3-diagnostic = { version = "5.0.3", path = "../n3v3-diagnostic" }
+n3v3-syntax = { version = "5.0.3", path = "../n3v3-syntax" }
+n3v3-parser = { version = "5.0.3", path = "../n3v3-parser" }
 
 [dev-dependencies]

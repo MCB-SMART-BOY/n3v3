@@ -14,7 +14,7 @@
 
 </div>
 
-**Current version: v5.0.2**. 12 canonical keywords, 55 diagnostic codes, 558 E2E tests, 26 LSP methods. Install via `cargo install n3v3`; five platform archives are available on [GitHub Releases](https://github.com/MCB-SMART-BOY/n3v3/releases/tag/v5.0.2).
+**Current version: v5.0.3** (workspace). 12 canonical keywords, 55 diagnostic codes, 558 E2E tests, 26 LSP methods. Check [GitHub Releases](https://github.com/MCB-SMART-BOY/n3v3/releases) and [crates.io](https://crates.io/crates/n3v3) for the latest published versions; `cargo install n3v3` installs the latest published Cargo version. The v5.0.2 release provided all five platform archives. AUR `n3v3-bin` can be installed once listed.
 
 Welcome to the n3v3 documentation hub. For **developer reference** (per-crate APIs,
 architecture, integration points), see `.claude/skills/` — 13 skill entry points
@@ -54,7 +54,7 @@ covering crate and cross-cutting tooling, kept in sync with the actual code.
 - [project/feature-matrix.md](project/feature-matrix.md): real support matrix
 - [project/ecosystem-design.md](project/ecosystem-design.md): flake, store, builder, registry
 - [project/registry.md](project/registry.md): package registry behavior and policy
-- [project/changelog.md](project/changelog.md): release history, including v5.0.2
+- [project/changelog.md](project/changelog.md): release history and v5.0.3 changes
 
 ### I want tooling and policy
 
